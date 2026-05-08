@@ -61,13 +61,24 @@ def _make_search_opts():
 def _make_stream_opts():
     return {
         "quiet": True, "no_warnings": True, "skip_download": True,
-        # Combined progressive mp4 (video+audio in one file) up to 720p
-        # 720p is the highest progressive format YouTube serves; higher
-        # resolutions are split DASH streams (not stream-friendly).
-        "format": "best[ext=mp4][protocol^=https]/best[ext=mp4]/best",
-        "noplaylist": True, "socket_timeout": 15,
+        # Preference order (each "/" separated alternative is tried in order):
+        #   1. Combined progressive mp4  (works in <video> on any browser)
+        #   2. Any combined progressive (audio+video in one stream)
+        #   3. HLS m3u8 (live streams + VOD fallback — handled via hls.js on frontend)
+        #   4. Best of anything (last resort)
+        "format": (
+            "best[protocol^=https][ext=mp4][acodec!=none][vcodec!=none]"
+            "/best[protocol^=https][acodec!=none][vcodec!=none]"
+            "/best[protocol*=m3u8][acodec!=none][vcodec!=none]"
+            "/best[ext=mp4]/best"
+        ),
+        "noplaylist": True, "socket_timeout": 20,
         "user_agent": random.choice(_USER_AGENTS),
-        "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
+        # 'mweb' & 'tv' clients more reliably yield progressive MP4 URLs for
+        # regular (VOD) videos. 'ios' is kept as a fallback (HLS for live).
+        "extractor_args": {
+            "youtube": {"player_client": ["mweb", "tv", "android", "ios", "web"]}
+        },
     }
 
 
@@ -145,20 +156,57 @@ def _stream_sync(video_id: str):
         info = ydl.extract_info(url, download=False)
     if not info:
         return None
+
+    is_live = bool(
+        info.get("is_live")
+        or info.get("live_status") in ("is_live", "is_upcoming")
+    )
+
     stream_url = info.get("url")
+    formats = info.get("formats") or []
+
+    # Prefer combined progressive mp4 (audio + video in a single stream)
     if not stream_url:
-        formats = info.get("formats") or []
-        progressive = [
+        progressive_mp4 = [
             f for f in formats
-            if f.get("vcodec") and f.get("vcodec") != "none"
-            and f.get("acodec") and f.get("acodec") != "none"
+            if f.get("vcodec") and f["vcodec"] != "none"
+            and f.get("acodec") and f["acodec"] != "none"
+            and f.get("url")
+            and (f.get("ext") == "mp4" or "mp4" in (f.get("container") or ""))
+        ]
+        progressive_mp4.sort(key=lambda f: f.get("height") or 0, reverse=True)
+        if progressive_mp4:
+            stream_url = progressive_mp4[0]["url"]
+
+    # Then any combined progressive
+    if not stream_url:
+        any_combined = [
+            f for f in formats
+            if f.get("vcodec") and f["vcodec"] != "none"
+            and f.get("acodec") and f["acodec"] != "none"
             and f.get("url")
         ]
-        if progressive:
-            progressive.sort(key=lambda f: f.get("height") or 0, reverse=True)
-            stream_url = progressive[0].get("url")
+        any_combined.sort(key=lambda f: f.get("height") or 0, reverse=True)
+        if any_combined:
+            stream_url = any_combined[0]["url"]
+
+    # Then HLS manifest (live streams + VOD fallback — frontend uses hls.js)
+    if not stream_url:
+        for f in formats:
+            proto = (f.get("protocol") or "").lower()
+            if "m3u8" in proto and f.get("url"):
+                stream_url = f["url"]
+                break
+
+    if not stream_url:
+        stream_url = info.get("manifest_url") or info.get("hls_url")
+
+    is_hls = bool(stream_url and ".m3u8" in stream_url)
+
     return {
         "stream_url": stream_url,
+        "is_live": is_live,
+        "is_hls": is_hls,
         "title": info.get("title"),
         "channel": info.get("uploader") or info.get("channel"),
         "channel_id": info.get("channel_id"),
@@ -523,12 +571,17 @@ async def stream_meta(video_id: str, request: Request, proxy: int = 0, user=Depe
     Returns playable stream URL.
     - default: direct googlevideo URL (each device's own IP, saves backend bandwidth)
     - ?proxy=1: routed through /api/proxy-stream/{id} (server IP)
+                Note: ignored for HLS / live streams (manifest playlists can't be
+                trivially proxied — segments are fetched directly by the player).
     """
     data = await resolve_stream(video_id)
     if not data or not data.get("stream_url"):
         raise HTTPException(404, "Stream not found")
 
-    if proxy:
+    is_hls = bool(data.get("is_hls"))
+    is_live = bool(data.get("is_live"))
+
+    if proxy and not is_hls:
         base = str(request.base_url).rstrip("/")
         out_url = f"{base}/api/proxy-stream/{video_id}"
     else:
@@ -559,7 +612,9 @@ async def stream_meta(video_id: str, request: Request, proxy: int = 0, user=Depe
         "description": data.get("description"),
         "view_count": data.get("view_count"),
         "stream_url": out_url,
-        "direct": not bool(proxy),
+        "is_live": is_live,
+        "is_hls": is_hls,
+        "direct": (not bool(proxy)) or is_hls,
     }
 
 
