@@ -1,3 +1,5 @@
-# SPA fallback — every non-asset path goes to index.html
-/api/*  https://YOUR-ORACLE-BACKEND-DOMAIN/api/:splat  200
+# 1. API müraciətlərini backend-ə yönləndir (301 və ya 302 kodu ilə)
+/api/*  https://YOUR-ORACLE-BACKEND-DOMAIN/api/:splat  301
+
+# 2. SPA fallback - Bütün digər yolları index.html-ə göndər
 /*      /index.html                                   200
