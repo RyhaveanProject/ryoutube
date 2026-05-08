@@ -132,6 +132,8 @@ export default function Watch() {
             startAt={startAt}
             onProgress={onProgress}
             onEnded={onEnded}
+            isHls={!!stream.is_hls}
+            isLive={!!stream.is_live}
           />
         )}
 
