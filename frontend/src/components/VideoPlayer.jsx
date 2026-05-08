@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
+import Hls from "hls.js";
 import {
   Play, Pause, Volume2, VolumeX, Maximize, Minimize,
   Rewind, FastForward, PictureInPicture2,
@@ -8,7 +9,7 @@ import { formatDuration } from "../lib/format";
 /**
  * VideoPlayer — custom controls over <video>.
  * Features: 10s skip, fullscreen, PiP, autoplay-next callback,
- * progress reporting, mini player on scroll handled by parent.
+ * progress reporting, HLS (m3u8) support via hls.js.
  */
 export default function VideoPlayer({
   src,
@@ -17,8 +18,11 @@ export default function VideoPlayer({
   onProgress,
   onEnded,
   autoPlay = true,
+  isHls = false,
+  isLive = false,
 }) {
   const ref = useRef(null);
+  const hlsRef = useRef(null);
   const wrapRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -30,18 +34,81 @@ export default function VideoPlayer({
   const [showCtrl, setShowCtrl] = useState(true);
   const hideTimer = useRef(null);
 
-  // Reset playback state when source changes
+  // Reset + attach source (HLS or progressive) when src changes
   useEffect(() => {
     const v = ref.current;
     if (!v) return;
     setTime(0); setDur(0); setBuffered(0); setPlaying(false);
-    if (src) {
-      v.load();
-      if (startAt > 0) v.currentTime = startAt;
-      if (autoPlay) v.play().catch(() => {});
+
+    // Cleanup any previous hls instance
+    if (hlsRef.current) {
+      try { hlsRef.current.destroy(); } catch {}
+      hlsRef.current = null;
     }
+
+    if (!src) return;
+
+    const looksHls = isHls || /\.m3u8($|\?)/i.test(src);
+
+    const tryAutoplay = () => {
+      if (startAt > 0 && !isLive) {
+        try { v.currentTime = startAt; } catch {}
+      }
+      if (autoPlay) v.play().catch(() => {});
+    };
+
+    if (looksHls) {
+      // Native HLS support (Safari / iOS)
+      if (v.canPlayType("application/vnd.apple.mpegurl")) {
+        v.src = src;
+        v.load();
+        tryAutoplay();
+      } else if (Hls.isSupported()) {
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: isLive,
+          liveDurationInfinity: isLive,
+          backBufferLength: isLive ? 60 : 90,
+        });
+        hlsRef.current = hls;
+        hls.loadSource(src);
+        hls.attachMedia(v);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => tryAutoplay());
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (data?.fatal) {
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                try { hls.startLoad(); } catch {}
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                try { hls.recoverMediaError(); } catch {}
+                break;
+              default:
+                try { hls.destroy(); } catch {}
+            }
+          }
+        });
+      } else {
+        // Browser can't play HLS at all — fallback attempt
+        v.src = src;
+        v.load();
+        tryAutoplay();
+      }
+    } else {
+      // Plain progressive (mp4)
+      v.src = src;
+      v.load();
+      tryAutoplay();
+    }
+
+    return () => {
+      if (hlsRef.current) {
+        try { hlsRef.current.destroy(); } catch {}
+        hlsRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src]);
+  }, [src, isHls, isLive]);
 
   useEffect(() => {
     const v = ref.current;
@@ -158,11 +225,9 @@ export default function VideoPlayer({
     >
       <video
         ref={ref}
-        src={src}
         poster={poster}
         playsInline
         className="absolute inset-0 w-full h-full"
-        crossOrigin="anonymous"
       />
 
       {!src && (
