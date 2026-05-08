@@ -61,11 +61,6 @@ def _make_search_opts():
 def _make_stream_opts():
     return {
         "quiet": True, "no_warnings": True, "skip_download": True,
-        # Preference order (each "/" separated alternative is tried in order):
-        #   1. Combined progressive mp4  (works in <video> on any browser)
-        #   2. Any combined progressive (audio+video in one stream)
-        #   3. HLS m3u8 (live streams + VOD fallback — handled via hls.js on frontend)
-        #   4. Best of anything (last resort)
         "format": (
             "best[protocol^=https][ext=mp4][acodec!=none][vcodec!=none]"
             "/best[protocol^=https][acodec!=none][vcodec!=none]"
@@ -74,10 +69,8 @@ def _make_stream_opts():
         ),
         "noplaylist": True, "socket_timeout": 20,
         "user_agent": random.choice(_USER_AGENTS),
-        # 'mweb' & 'tv' clients more reliably yield progressive MP4 URLs for
-        # regular (VOD) videos. 'ios' is kept as a fallback (HLS for live).
         "extractor_args": {
-            "youtube": {"player_client": ["mweb", "tv", "android", "ios", "web"]}
+            "youtube": {"player_client": ["ios", "android", "web"]}
         },
     }
 
