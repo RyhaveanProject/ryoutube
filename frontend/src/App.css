@@ -1,0 +1,5 @@
+
+Action: file_editor create /app/frontend/src/App.css --file-text "/* Reserved for component-scoped overrides */
+.App { min-height: 100vh; background: var(--yt-bg); }
+"
+Observation: Overwrite successful: /app/frontend/src/App.css
