@@ -1,5 +1,5 @@
-# 1. API müraciətlərini backend-ə yönləndir
-/api/*  https://YOUR-ORACLE-BACKEND-DOMAIN/api/:splat  301
+# 1. API müraciətlərini Render backend-inə yönləndir
+/api/*  https://ryoutube-backend.onrender.com/api/:splat  301
 
-# 2. SPA Fallback (Düzəldilmiş versiya)
-/*      /index.html                                   404
+# 2. SPA Fallback (Cloudflare döngə xətasının qarşısını almaq üçün)
+/*      /index.html                                     404
