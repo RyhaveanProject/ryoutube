@@ -1,0 +1,2 @@
+/* Reserved for component-scoped overrides */
+.App { min-height: 100vh; background: var(--yt-bg); }
