@@ -1,5 +1,5 @@
-# 1. API müraciətlərini backend-ə yönləndir (301 və ya 302 kodu ilə)
+# 1. API müraciətlərini backend-ə yönləndir
 /api/*  https://YOUR-ORACLE-BACKEND-DOMAIN/api/:splat  301
 
-# 2. SPA fallback - Bütün digər yolları index.html-ə göndər
-/*      /index.html                                   200
+# 2. SPA Fallback (Düzəldilmiş versiya)
+/*      /index.html                                   404
