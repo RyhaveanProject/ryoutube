@@ -26,4 +26,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -fs http://127.0.0.1:8001/api/ || exit 1
 
 ENTRYPOINT ["/usr/bin/tini","--"]
-CMD ["CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-8001} --workers 2"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "2"]
