@@ -200,7 +200,7 @@ export default function Layout({ children }) {
             {profileOpen && (
             <div
               role="menu"
-              className="ryh-profile-menu absolute right-0 top-11 ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 min-w-[260px] max-w-[calc(100vw-1rem)] z-50"
+              className="ryh-profile-menu fixed ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 z-50"
               data-testid="header-profile-menu"
             >
               <div className="px-3 py-2 border-b border-white/10">
