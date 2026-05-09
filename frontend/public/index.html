@@ -3,15 +3,44 @@
   <head>
     <meta charset="utf-8" />
     <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
-    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no,maximum-scale=1.0" />
+
+    <!-- Viewport: viewport-fit=cover for iOS notch; minimum-scale prevents
+         iOS Safari "double-tap zoom" bug; interactive-widget=resizes-content
+         keeps the layout intact when the soft keyboard opens on Android. -->
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,minimum-scale=1,maximum-scale=5,user-scalable=yes,interactive-widget=resizes-content" />
     <meta name="theme-color" content="#0f0f0f" />
+    <meta name="color-scheme" content="dark" />
+
+    <!-- iOS PWA -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Ryhavean YT" />
+
+    <!-- Android / Chrome -->
     <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="Ryhavean YT" />
+    <meta name="msapplication-TileColor" content="#0f0f0f" />
+    <meta name="msapplication-tap-highlight" content="no" />
+
     <meta name="description" content="Ryhavean YouTube — VIP video streaming PWA" />
-    <link rel="apple-touch-icon" href="%PUBLIC_URL%/icon-192.png" />
+    <meta name="format-detection" content="telephone=no" />
+
+    <!-- iOS home-screen icons (multiple sizes from same file; iOS picks best fit) -->
+    <link rel="apple-touch-icon" sizes="180x180" href="%PUBLIC_URL%/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="%PUBLIC_URL%/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="167x167" href="%PUBLIC_URL%/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="152x152" href="%PUBLIC_URL%/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="120x120" href="%PUBLIC_URL%/icon-192.png" />
+
+    <!-- iOS splash (single image; iOS handles scaling) -->
+    <link rel="apple-touch-startup-image" href="%PUBLIC_URL%/icon-512.png" />
+
     <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+
+    <!-- Security: minimal CSP for iframe-heavy app (allows youtube embeds + http(s) thumbnails) -->
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
+
     <title>Ryhavean YouTube</title>
   </head>
   <body style="background:#0f0f0f">
@@ -23,6 +52,10 @@
           navigator.serviceWorker.register('/sw.js').catch(() => {});
         });
       }
+      // iOS PWA: prevent rubber-band overscroll outside the app shell
+      document.addEventListener('touchmove', function (e) {
+        if (e.touches && e.touches.length > 1) e.preventDefault();
+      }, { passive: false });
     </script>
   </body>
 </html>
