@@ -21,10 +21,12 @@ export default function VideoPlayer({
   isHls = false,
   isLive = false,
   skipSegments = [],
+  embedUrl = "",
 }) {
   const ref = useRef(null);
   const hlsRef = useRef(null);
   const wrapRef = useRef(null);
+  const iframeRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [vol, setVol] = useState(1);
@@ -227,6 +229,105 @@ export default function VideoPlayer({
 
   const pct = dur ? (time / dur) * 100 : 0;
   const bufPct = dur ? (buffered / dur) * 100 : 0;
+
+  // ----- Embed (iframe) fallback: shown when backend can't extract a stream URL.
+  // Uses youtube-nocookie + privacy-enhanced params; ads are stripped by the
+  // Service Worker / in-page ad-block layer (see public/sw.js & lib/adBlock.js).
+  // Sponsor segments are auto-skipped via the IFrame Player postMessage API.
+  useEffect(() => {
+    if (!embedUrl) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+
+    const send = (func, args = []) => {
+      try {
+        iframe.contentWindow?.postMessage(
+          JSON.stringify({ event: "command", func, args }),
+          "*"
+        );
+      } catch (_) {}
+    };
+    const listening = () => {
+      try {
+        iframe.contentWindow?.postMessage(
+          JSON.stringify({ event: "listening", id: 1, channel: "widget" }),
+          "*"
+        );
+      } catch (_) {}
+    };
+
+    let pollId;
+    const onMsg = (e) => {
+      if (typeof e.data !== "string") return;
+      let d;
+      try { d = JSON.parse(e.data); } catch { return; }
+      if (d.event === "onReady" || d.event === "initialDelivery") {
+        if (startAt > 0) send("seekTo", [startAt, true]);
+        // Poll currentTime once a second to do SponsorBlock skips & ended detection.
+        if (!pollId) {
+          pollId = setInterval(() => send("getCurrentTime"), 1000);
+        }
+      }
+      if (d.event === "infoDelivery" && d.info) {
+        if (typeof d.info.currentTime === "number") {
+          const t = d.info.currentTime;
+          setTime(t);
+          onProgress && onProgress(t, d.info.duration || 0);
+          if (skipSegments && skipSegments.length) {
+            for (let i = 0; i < skipSegments.length; i++) {
+              const s = skipSegments[i];
+              if (t >= s.start && t < s.end - 0.4) {
+                send("seekTo", [s.end, true]);
+                break;
+              }
+            }
+          }
+        }
+        if (typeof d.info.duration === "number") setDur(d.info.duration);
+        if (d.info.playerState === 1) setPlaying(true);
+        if (d.info.playerState === 2) setPlaying(false);
+        if (d.info.playerState === 0) onEnded && onEnded();
+      }
+    };
+    window.addEventListener("message", onMsg);
+    // Some browsers swallow the first listen; resend until ready.
+    const handshake = setInterval(listening, 400);
+    setTimeout(() => clearInterval(handshake), 4000);
+
+    return () => {
+      window.removeEventListener("message", onMsg);
+      clearInterval(handshake);
+      if (pollId) clearInterval(pollId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedUrl, skipSegments]);
+
+  if (embedUrl) {
+    // Build an embed URL that is guaranteed to expose the postMessage API.
+    const sep = embedUrl.includes("?") ? "&" : "?";
+    const finalEmbed = `${embedUrl}${sep}enablejsapi=1&origin=${encodeURIComponent(
+      typeof window !== "undefined" ? window.location.origin : ""
+    )}&start=${Math.max(0, Math.floor(startAt || 0))}`;
+    return (
+      <div
+        ref={wrapRef}
+        className="relative w-full bg-black aspect-video"
+        data-testid="video-player-embed"
+      >
+        <iframe
+          ref={iframeRef}
+          src={finalEmbed}
+          title="YouTube video player"
+          className="absolute inset-0 w-full h-full"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+          allowFullScreen
+          referrerPolicy="no-referrer-when-downgrade"
+          loading="eager"
+          frameBorder="0"
+        />
+      </div>
+    );
+  }
 
   return (
     <div
