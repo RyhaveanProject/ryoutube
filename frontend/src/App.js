@@ -1,85 +1,52 @@
-import React, { useEffect } from "react";
-import "./App.css";
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
-import { AuthProvider, useAuth } from "./lib/auth";
-import { installCopyGuard } from "./lib/copyGuard";
-import { installAdBlock } from "./lib/adBlock";
-import Layout from "./components/Layout";
-import Login from "./pages/Login";
-import DeviceBlocked from "./pages/DeviceBlocked";
-import Home from "./pages/Home";
-import Search from "./pages/Search";
-import Watch from "./pages/Watch";
-import Library from "./pages/Library";
-import Admin from "./pages/Admin";
-import { HistoryPage, LikedPage, WatchLaterPage } from "./pages/Lists";
-import YouTubeCallback from "./pages/YouTubeCallback";
-import { Loader2 } from "lucide-react";
+import axios from "axios";
 
-function ProtectedShell({ children }) {
-  const { user, ready, deviceBlocked } = useAuth();
-  const loc = useLocation();
-  if (!ready) return <FullPageLoader />;
-  if (deviceBlocked) return <Navigate to="/blocked" replace />;
-  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
-  return <Layout>{children}</Layout>;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+export const API = `${BACKEND_URL}/api`;
+
+export const api = axios.create({ baseURL: API });
+
+export function setAuthHeaders({ token, deviceId }) {
+  if (token) api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+  else delete api.defaults.headers.common["Authorization"];
+  if (deviceId) api.defaults.headers.common["X-Device-Id"] = deviceId;
 }
 
-function FullPageLoader() {
-  return (
-    <div className="min-h-screen grid place-items-center bg-black">
-      <Loader2 className="w-8 h-8 animate-spin text-neutral-500" />
-    </div>
-  );
+// 401 detail strings raised by /api/youtube/me/* endpoints when the user has
+// NOT linked their YouTube account (or the link expired). These must NOT log
+// the app user out — they only mean "YouTube integration not available".
+const YT_INTEGRATION_401 = new Set([
+  "YouTube not connected",
+  "YouTube not linked",
+  "YouTube auth required",
+]);
+
+function _isYouTubeIntegrationUrl(url = "") {
+  // Don't include /api/youtube/auth/* here — auth/exchange uses its own axios.
+  // We specifically want to skip session-kill for per-user YT data endpoints.
+  return /\/youtube\/(me|auth\/(status|disconnect|url))(\/|$|\?)/.test(url);
 }
 
-function GuardedAdmin() {
-  const { user } = useAuth();
-  if (!user || user.role !== "admin") return <Navigate to="/" replace />;
-  return <Admin />;
-}
-
-function App() {
-  useEffect(() => {
-    installCopyGuard();
-    installAdBlock();
-  }, []);
-
-  return (
-    <div className="App">
-      <AuthProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/blocked" element={<DeviceBlocked />} />
-            {/*
-              YouTube OAuth callback is intentionally PUBLIC.
-              Reasons:
-                - On return from Google, AuthProvider may still be running
-                  /auth/me. Wrapping this route in a guard caused users to
-                  be bounced to /login while the verify() call was in flight
-                  (or if it transiently failed), even though their session
-                  was perfectly valid in localStorage.
-                - Flow B (?yt=ok) doesn't need auth at all — it just bounces
-                  the user back to where they started.
-                - Flow A (?code=...) reads the bearer token from localStorage
-                  itself and recovers gracefully if it's missing.
-            */}
-            <Route path="/youtube/callback" element={<YouTubeCallback />} />
-            <Route path="/" element={<ProtectedShell><Home /></ProtectedShell>} />
-            <Route path="/search" element={<ProtectedShell><Search /></ProtectedShell>} />
-            <Route path="/watch/:id" element={<ProtectedShell><Watch /></ProtectedShell>} />
-            <Route path="/library" element={<ProtectedShell><Library /></ProtectedShell>} />
-            <Route path="/history" element={<ProtectedShell><HistoryPage /></ProtectedShell>} />
-            <Route path="/liked" element={<ProtectedShell><LikedPage /></ProtectedShell>} />
-            <Route path="/watch-later" element={<ProtectedShell><WatchLaterPage /></ProtectedShell>} />
-            <Route path="/admin" element={<ProtectedShell><GuardedAdmin /></ProtectedShell>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
-    </div>
-  );
-}
-
-export default App;
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    const status = err?.response?.status;
+    const detail = err?.response?.data?.detail;
+    const url = err?.config?.url || "";
+    if (status === 409 && detail === "DEVICE_MISMATCH") {
+      window.dispatchEvent(new CustomEvent("ryh:device-mismatch"));
+    } else if (status === 401) {
+      // CRITICAL FIX: a 401 from a YouTube-integration endpoint (e.g. the
+      // user hasn't linked their YouTube account, or the linked token was
+      // revoked) must NOT clear the app session. Previously every 401
+      // dispatched ryh:unauthorized, which deleted the app's bearer token
+      // and bounced the user back to /login immediately after they had
+      // just successfully signed in or connected their YouTube account.
+      const isYTIntegration =
+        _isYouTubeIntegrationUrl(url) || YT_INTEGRATION_401.has(detail);
+      if (!isYTIntegration) {
+        window.dispatchEvent(new CustomEvent("ryh:unauthorized"));
+      }
+    }
+    return Promise.reject(err);
+  }
+);
