@@ -16,6 +16,21 @@ const AD_HOSTS = [
   'analytics.google.com',
   'imasdk.googleapis.com',
   'pagead2.googlesyndication.com',
+  'static.doubleclick.net',
+  'ad.doubleclick.net',
+  'securepubads.g.doubleclick.net',
+  's0.2mdn.net',
+  'adservice.google.com',
+  'adservice.google.az',
+  'adservice.google.ru',
+  'play.google.com',
+  'youtube.com/api/stats/ads',
+  'youtube.com/pagead',
+  'youtube.com/ptracking',
+  'youtube.com/get_midroll_info',
+  'youtube.com/api/stats/qoe',
+  'youtube.com/api/stats/atr',
+  'youtube.com/api/stats/watchtime',
 ];
 
 const AD_PATH_FRAGMENTS = [
@@ -31,6 +46,12 @@ const AD_PATH_FRAGMENTS = [
   '/api/stats/atr',
   '/api/stats/watchtime',
   '/log_event',
+  '/youtubei/v1/log_event',
+  '/youtubei/v1/player/ad_break',
+  '/api/stats/playback',
+  '/api/stats/delayplay',
+  '/csi_204',
+  '/generate_204',
 ];
 
 function isAdUrl(u) {
