@@ -149,21 +149,32 @@ function PlayerHost() {
   // (only touch the DOM when the value actually changed) to eliminate
   // visible jitter when the user scrolls the Up-next list.
   //
-  // On MOBILE while inline, instead of following the (sticky) slot
-  // rect — which can flicker during iOS rubber-band scroll — we pin
-  // the host to a fixed top offset under the header. The result: the
-  // video stays rock-stable in place while scrolling the page. On
-  // DESKTOP the host still tracks the slot rect, since the slot is
-  // not sticky there.
+  // CRITICAL: when in MINI mode (not inline), we DO NOT run an rAF loop.
+  // Previously the host was repositioned every frame relative to the
+  // bottom-nav rect, which made the mini-player visibly stutter ("dona
+  // dona hərəkət edir") whenever the user scrolled the search results.
+  // Now we set its position ONCE in the layout effect and let CSS
+  // (position: fixed, bottom: nav-height) keep it perfectly stable.
+  // The rAF loop is reserved for INLINE mode where we still need to
+  // follow the desktop slot rect.
   useEffect(() => {
     if (!video) return;
-    let raf = 0;
-    const apply = (left, top, width, height, radius, shadow, opacity) => {
+    const apply = (left, top, width, height, radius, shadow, opacity, useBottom) => {
       const host = hostRef.current;
       if (!host) return;
       const last = lastGeomRef.current;
+      if (useBottom) {
+        // Mini-mobile: pin to BOTTOM via CSS so iOS rubber-band /
+        // address-bar collapse can't desync our `top` value.
+        if (host.style.top !== "auto") host.style.top = "auto";
+        const b = `${useBottom}px`;
+        if (host.style.bottom !== b) host.style.bottom = b;
+        last.top = -1; // invalidate top tracking for next time
+      } else {
+        if (host.style.bottom !== "auto") host.style.bottom = "auto";
+        if (Math.abs(top - last.top) > 0.5) { host.style.top = `${top}px`; last.top = top; }
+      }
       if (Math.abs(left - last.left) > 0.5) { host.style.left = `${left}px`; last.left = left; }
-      if (Math.abs(top - last.top) > 0.5) { host.style.top = `${top}px`; last.top = top; }
       if (Math.abs(width - last.width) > 0.5) { host.style.width = `${width}px`; last.width = width; }
       if (Math.abs(height - last.height) > 0.5) { host.style.height = `${height}px`; last.height = height; }
       if (radius !== last.radius) { host.style.borderRadius = radius; last.radius = radius; }
@@ -171,38 +182,17 @@ function PlayerHost() {
       if (opacity !== last.opacity) { host.style.opacity = opacity; last.opacity = opacity; }
     };
     const HEADER_H = 56;
-    const tick = () => {
-      if (inline && isMobile) {
-        // Mobile inline: pin under header. NEVER read slot rect during
-        // scroll — that's what caused the "video moves / disappears"
-        // glitch when scrolling Up-next.
-        const w = window.innerWidth;
-        const h = Math.round(w * 9 / 16);
-        apply(0, HEADER_H + dragOffset, w, h,
-          "0px", "none",
-          dragOffset > 0 ? `${Math.max(0.4, 1 - dragOffset / 400)}` : "1");
-      } else if (inline && slotEl) {
-        const r = slotEl.getBoundingClientRect();
-        apply(
-          r.left, r.top + dragOffset, r.width, r.height,
-          "0px", "none",
-          dragOffset > 0 ? `${Math.max(0.4, 1 - dragOffset / 400)}` : "1"
-        );
-      } else if (isMobile) {
-        // Real-YouTube-style mini bar pinned ABOVE the bottom nav.
-        // We measure the actual nav element so safe-area insets and
-        // any future nav-height changes are respected automatically
-        // (fixes "mini player too low / clipped by bottom nav").
+
+    // Mini mode: position ONCE, no rAF. Stays perfectly stable while
+    // the user scrolls. Re-evaluated on resize / orientation change
+    // (see listener below).
+    if (!inline) {
+      const navEl = document.querySelector('[data-testid="mobile-bottom-nav"]');
+      const navH = navEl ? navEl.getBoundingClientRect().height : 56;
+      if (isMobile) {
         const barH = 64;
-        const navEl = document.querySelector('[data-testid="mobile-bottom-nav"]');
-        const navTop = navEl
-          ? navEl.getBoundingClientRect().top
-          : (window.innerHeight - 56);
-        apply(
-          0, Math.max(0, navTop - barH),
-          window.innerWidth, barH,
-          "0px", "0 -6px 20px rgba(0,0,0,.6)", "1"
-        );
+        apply(0, 0, window.innerWidth, barH,
+              "0px", "0 -6px 20px rgba(0,0,0,.6)", "1", navH);
       } else {
         const w = 320;
         const videoH = Math.round(w * 9 / 16);
@@ -211,7 +201,36 @@ function PlayerHost() {
           window.innerWidth - w - 16,
           window.innerHeight - videoH - captionH - 16,
           w, videoH + captionH,
-          "12px", "0 12px 40px rgba(0,0,0,.6)", "1"
+          "12px", "0 12px 40px rgba(0,0,0,.6)", "1",
+          0  // 0 means: don't use bottom anchor on desktop
+        );
+        // Restore top anchoring for desktop mini.
+        if (hostRef.current) {
+          hostRef.current.style.bottom = "auto";
+          hostRef.current.style.top = `${window.innerHeight - videoH - captionH - 16}px`;
+        }
+      }
+      return; // No rAF in mini mode.
+    }
+
+    // Inline mode: keep rAF so we follow the slot precisely on desktop
+    // (and respect drag-offset on both platforms).
+    let raf = 0;
+    const tick = () => {
+      if (isMobile) {
+        const w = window.innerWidth;
+        const h = Math.round(w * 9 / 16);
+        apply(0, HEADER_H + dragOffset, w, h,
+          "0px", "none",
+          dragOffset > 0 ? `${Math.max(0.4, 1 - dragOffset / 400)}` : "1",
+          0);
+      } else if (slotEl) {
+        const r = slotEl.getBoundingClientRect();
+        apply(
+          r.left, r.top + dragOffset, r.width, r.height,
+          "0px", "none",
+          dragOffset > 0 ? `${Math.max(0.4, 1 - dragOffset / 400)}` : "1",
+          0
         );
       }
       raf = requestAnimationFrame(tick);
