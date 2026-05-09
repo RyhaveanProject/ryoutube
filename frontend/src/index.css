@@ -120,10 +120,21 @@ body, .ryh-no-copy, .ryh-no-copy * {
   font-family: "Bebas Neue", "Oswald", "Roboto", sans-serif;
   font-weight: 900;
   letter-spacing: -0.02em;
-  background: linear-gradient(135deg, #ff0000 0%, #ff4d4d 100%);
+  background: linear-gradient(135deg, #ff1a1a 0%, #ff5252 60%, #ff8a8a 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  filter: drop-shadow(0 2px 8px rgba(255, 0, 0, 0.35));
+}
+.ryh-logo-wordmark {
+  font-family: "Bebas Neue", "Oswald", "Roboto", sans-serif;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+.ryh-logo-sub {
+  font-family: "Inter", "Roboto", sans-serif;
+  font-weight: 600;
+  margin-top: 2px;
 }
 
 input.ryh-input, textarea.ryh-input {
