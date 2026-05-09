@@ -16,9 +16,12 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+  /* Dynamic viewport height — updates with iOS keyboard / browser chrome */
+  --app-vh: 100vh;
+  --app-vh: 100dvh;
 }
 
-html, body, #root { height: 100%; }
+html, body, #root { height: 100%; min-height: 100vh; min-height: 100dvh; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -28,7 +31,9 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
-  /* iOS safe-area aware */
+  /* iOS overscroll bounce — disable so the PWA feels native */
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
   padding-left: var(--safe-left);
   padding-right: var(--safe-right);
 }
@@ -36,14 +41,12 @@ body {
 * { box-sizing: border-box; }
 img, video { max-width: 100%; }
 
-/* Safe-area helpers */
 .pt-safe { padding-top: var(--safe-top); }
 .pb-safe { padding-bottom: var(--safe-bottom); }
 .pl-safe { padding-left: var(--safe-left); }
 .pr-safe { padding-right: var(--safe-right); }
 .h-safe-top { height: var(--safe-top); }
 
-/* Disable text selection globally — re-enabled inside .ryh-allow-copy */
 body, .ryh-no-copy, .ryh-no-copy * {
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -55,7 +58,6 @@ body, .ryh-no-copy, .ryh-no-copy * {
   user-select: text !important;
 }
 
-/* shadcn dark theme overrides */
 @layer base {
   :root {
     --background: 0 0% 6%;
@@ -86,21 +88,18 @@ body, .ryh-no-copy, .ryh-no-copy * {
   body { @apply bg-background text-foreground; }
 }
 
-/* Glassmorphism */
 .ryh-glass {
-  background: rgba(24, 24, 24, 0.65);
+  background: rgba(24, 24, 24, 0.78);
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* Scrollbar (YouTube-like) */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 6px; }
 ::-webkit-scrollbar-thumb:hover { background: #555; }
 
-/* Animations */
 @keyframes ryh-fade-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -117,7 +116,6 @@ body, .ryh-no-copy, .ryh-no-copy * {
   animation: ryh-skeleton 1.4s infinite linear;
 }
 
-/* Logo */
 .ryh-logo-r {
   font-family: "Bebas Neue", "Oswald", "Roboto", sans-serif;
   font-weight: 900;
@@ -128,38 +126,32 @@ body, .ryh-no-copy, .ryh-no-copy * {
   color: transparent;
 }
 
-/* Search input — allow copy */
 input.ryh-input, textarea.ryh-input {
   -webkit-user-select: text !important;
   user-select: text !important;
+  /* Prevent iOS Safari from auto-zooming when input gains focus */
+  font-size: 16px;
 }
 
-/* Custom focus ring */
 input:focus, button:focus { outline: none; }
 
-/* Hide scrollbars on horizontal rails */
 .ryh-rail::-webkit-scrollbar { display: none; }
 .ryh-rail { scrollbar-width: none; }
 
-/* Video card hover */
 .ryh-card { transition: transform 0.18s ease; }
 .ryh-card:hover { transform: translateY(-2px); }
 .ryh-card .ryh-thumb { transition: border-radius 0.18s ease; }
 .ryh-card:hover .ryh-thumb { border-radius: 0; }
 
-/* ===== Mobile-first responsiveness fixes ===== */
-
-/* Ensure tap targets are big enough on touch devices */
+/* ===== Mobile-first responsiveness ===== */
 @media (hover: none) and (pointer: coarse) {
   button, a, [role="button"] { -webkit-tap-highlight-color: transparent; }
 }
 
-/* Sticky header should sit below iOS notch */
-.ryh-header {
-  padding-top: var(--safe-top);
-}
+/* Sticky header below iOS notch */
+.ryh-header { padding-top: var(--safe-top); }
 
-/* Profile dropdown — pinned to viewport, safe-area aware (iOS/Android) */
+/* Profile dropdown */
 .ryh-profile-menu {
   top: calc(var(--safe-top, 0px) + 3.5rem);
   right: calc(var(--safe-right, 0px) + 0.5rem);
@@ -168,8 +160,6 @@ input:focus, button:focus { outline: none; }
   max-height: calc(100vh - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 4.5rem);
   overflow-y: auto;
 }
-
-/* On very small screens, profile dropdown should fill available width */
 @media (max-width: 380px) {
   .ryh-profile-menu {
     width: calc(100vw - 1rem - var(--safe-right, 0px) - var(--safe-left, 0px)) !important;
@@ -177,46 +167,44 @@ input:focus, button:focus { outline: none; }
   }
 }
 
-/* Mobile bottom nav height (when used) */
 .ryh-bottom-nav-spacer { height: calc(56px + var(--safe-bottom)); }
 
-/* Avoid horizontal overflow caused by long descriptions/titles.
-   We use `clip` instead of `hidden` so sticky positioning on
-   descendants (the watch-page player wrapper) keeps working. */
+/* Avoid horizontal overflow but keep sticky descendants working */
 .ryh-no-overflow-x { overflow-x: clip; max-width: 100%; }
 
 /* iOS PWA: remove blue overlays on tap */
 * { -webkit-tap-highlight-color: rgba(0,0,0,0); }
 
-/* Make video player fill phone screen width AND keep it sticky just
-   below the header while the user scrolls down through recommendations
-   / description, mirroring YouTube's mobile behaviour. */
+/* Watch page: only sticky on mobile (NOT desktop). The sticky desktop
+   behaviour caused the "video stays glued on top of Up next" bug. */
 @media (max-width: 1023px) {
   .ryh-watch-player-wrap {
     margin-left: calc(-1 * var(--safe-left));
     margin-right: calc(-1 * var(--safe-right));
     position: sticky;
-    top: 56px; /* header h-14 */
+    top: 56px;
     z-index: 30;
   }
 }
+@media (min-width: 1024px) {
+  /* Desktop: NOT sticky — recommendations don't get covered. */
+  .ryh-watch-player-wrap { position: static; }
+}
 
-/* Prevent iOS body scroll underneath when drawer/menu open */
 body.ryh-lock { overflow: hidden; touch-action: none; }
 
 /* ==========================================================
    Global PlayerHost styles (mini-player + sticky player)
    ========================================================== */
-.ryh-player-host { user-select: none; touch-action: none; }
+.ryh-player-host { user-select: none; touch-action: none; transform: translateZ(0); will-change: left, top, width, height; }
 .ryh-player-host iframe { background: #000; }
 .ryh-player-slot { aspect-ratio: 16 / 9; width: 100%; background: #000; }
 
 /* ==========================================================
    YouTube embed brand-cover overlays
-   We keep ONLY the top-left cover (hides "Watch on YouTube"
-   link / title pill). The previously-used top-right black
-   square and the bottom-right channel-watermark blocker have
-   been removed at the user's request.
+   We hide:
+     - Top-left: "Watch on YouTube" link + title pill
+     - Bottom-right: YouTube watermark / logo + share/watch-later cluster
    ========================================================== */
 .ryh-yt-cover {
   position: absolute;
@@ -224,17 +212,46 @@ body.ryh-lock { overflow: hidden; touch-action: none; }
   z-index: 4;
   pointer-events: auto;
 }
-/* Top-left: "Watch on YouTube" link + video title pill */
 .ryh-yt-cover-tl {
   top: 0; left: 0;
   width: 70%; height: 56px;
   background: linear-gradient(to bottom, rgba(0,0,0,.85) 30%, rgba(0,0,0,0));
 }
+/* Bottom-right cover: hides the YT logo watermark + the "More videos"
+   suggestions tile that YouTube shows at end of playback. */
+.ryh-yt-cover-br {
+  right: 0; bottom: 0;
+  width: 110px; height: 38px;
+  background: linear-gradient(to top left, rgba(0,0,0,.92) 60%, rgba(0,0,0,0));
+}
 
-/* While player is in mini mode, host iframe should be unselectable */
-.ryh-player-host { user-select: none; }
-.ryh-player-host iframe { background: #000; }
+/* ==========================================================
+   Header / search responsiveness
+   ========================================================== */
+/* Mobile portrait: ensure search icon is always visible and never
+   clipped by long emails / safe-area. */
+@media (max-width: 767px) {
+  .ryh-header > div {
+    /* Keep header items in one row, never wrapping */
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .ryh-header form { display: none; }
+}
+@media (max-width: 380px) {
+  .ryh-header > div { gap: 0.25rem; padding-left: 0.5rem; padding-right: 0.5rem; }
+}
 
-/* Inline player slot fills available width with 16:9 ratio */
-.ryh-player-slot { aspect-ratio: 16 / 9; width: 100%; background: #000; }
+/* Mini-player: smooth GPU-accelerated transitions */
+.ryh-mini-mobile { transition: left .25s ease, top .25s ease, opacity .15s ease; }
 
+/* Reduce motion respect */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+/* Pull-to-refresh wrapper guard */
+[data-testid="ptr-wrap"] { overscroll-behavior-y: contain; }
