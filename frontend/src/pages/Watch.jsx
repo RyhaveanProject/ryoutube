@@ -14,6 +14,7 @@ export default function Watch() {
   const [meta, setMeta] = useState(null);
   const [stream, setStream] = useState(null);
   const [recs, setRecs] = useState([]);
+  const [skipSegments, setSkipSegments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [liked, setLiked] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -32,6 +33,10 @@ export default function Watch() {
       setStream(s.data);
       setRecs(r.data.results || []);
       setLiked((l.data.ids || []).includes(id));
+      // Fetch sponsor / in-video ad segments to auto-skip
+      api.get(`/skip-segments/${id}`)
+        .then((res) => setSkipSegments(res.data?.segments || []))
+        .catch(() => setSkipSegments([]));
       // Get history progress
       const h = await api.get(`/history`).catch(() => ({ data: { history: [] } }));
       const item = (h.data.history || []).find((x) => x.video_id === id);
@@ -134,6 +139,7 @@ export default function Watch() {
             onEnded={onEnded}
             isHls={!!stream.is_hls}
             isLive={!!stream.is_live}
+            skipSegments={skipSegments}
           />
         )}
 
