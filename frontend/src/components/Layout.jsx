@@ -23,12 +23,36 @@ export default function Layout({ children }) {
   const [suggestions, setSuggestions] = useState([]);
   const [showSug, setShowSug] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const sugTimer = useRef(null);
+  const profileRef = useRef(null);
 
   useEffect(() => {
     const params = new URLSearchParams(loc.search);
     if (loc.pathname === "/search") setQ(params.get("q") || "");
   }, [loc]);
+
+  // Close profile menu on route change
+  useEffect(() => { setProfileOpen(false); }, [loc.pathname, loc.search]);
+
+  // Close profile menu on outside click / Escape (works on touch + mouse + PWA)
+  useEffect(() => {
+    if (!profileOpen) return;
+    const onDown = (e) => {
+      if (profileRef.current && !profileRef.current.contains(e.target)) {
+        setProfileOpen(false);
+      }
+    };
+    const onKey = (e) => { if (e.key === "Escape") setProfileOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown, { passive: true });
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [profileOpen]);
 
   useEffect(() => {
     if (sugTimer.current) clearTimeout(sugTimer.current);
@@ -53,6 +77,7 @@ export default function Layout({ children }) {
   const isAdmin = user?.role === "admin";
 
   const handleConnectYT = async () => {
+    setProfileOpen(false);
     try { await yt.connect(); } catch { /* ignored */ }
   };
   const handleDisconnectYT = async () => {
@@ -126,9 +151,13 @@ export default function Layout({ children }) {
             <Bell className="w-5 h-5" />
           </button>
 
-          <div className="relative group">
+          <div className="relative" ref={profileRef}>
             <button
-              className="w-9 h-9 rounded-full bg-gradient-to-br from-red-500 to-red-700 grid place-items-center text-white font-bold text-sm overflow-hidden"
+              type="button"
+              onClick={() => setProfileOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={profileOpen}
+              className="w-9 h-9 rounded-full bg-gradient-to-br from-red-500 to-red-700 grid place-items-center text-white font-bold text-sm overflow-hidden focus:outline-none focus:ring-2 focus:ring-red-500/60"
               data-testid="header-profile-btn"
             >
               {yt.connected && yt.google?.picture ? (
@@ -138,7 +167,12 @@ export default function Layout({ children }) {
                 (user?.email || "U").charAt(0).toUpperCase()
               )}
             </button>
-            <div className="absolute right-0 top-11 ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 min-w-[260px] hidden group-hover:block">
+            {profileOpen && (
+            <div
+              role="menu"
+              className="absolute right-0 top-11 ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 min-w-[260px] max-w-[calc(100vw-1rem)] z-50"
+              data-testid="header-profile-menu"
+            >
               <div className="px-3 py-2 border-b border-white/10">
                 <div className="text-[13px] text-white truncate">{user?.email}</div>
                 <div className="text-[11px] text-neutral-400">{user?.role}</div>
@@ -190,18 +224,24 @@ export default function Layout({ children }) {
               </div>
 
               {isAdmin && (
-                <Link to="/admin" className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm" data-testid="profile-admin-link">
+                <Link
+                  to="/admin"
+                  onClick={() => setProfileOpen(false)}
+                  className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm text-white"
+                  data-testid="profile-admin-link"
+                >
                   <Shield className="w-4 h-4" /> Admin Panel
                 </Link>
               )}
               <button
-                onClick={async () => { await logout(); nav("/login"); }}
-                className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm w-full text-left"
+                onClick={async () => { setProfileOpen(false); await logout(); nav("/login"); }}
+                className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm w-full text-left text-white"
                 data-testid="profile-logout-btn"
               >
                 <LogOut className="w-4 h-4" /> Sign out
               </button>
             </div>
+            )}
           </div>
         </div>
 
