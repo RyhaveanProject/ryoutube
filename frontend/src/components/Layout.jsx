@@ -14,6 +14,13 @@ const NAV = [
   { to: "/watch-later", label: "Watch Later", icon: Clock, testid: "nav-watch-later" },
 ];
 
+const BOTTOM_NAV = [
+  { to: "/", label: "Home", icon: Home, testid: "bnav-home" },
+  { to: "/search", label: "Search", icon: Search, testid: "bnav-search" },
+  { to: "/library", label: "Library", icon: Library, testid: "bnav-library" },
+  { to: "/history", label: "History", icon: History, testid: "bnav-history" },
+];
+
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
   const yt = useYouTube();
@@ -33,9 +40,16 @@ export default function Layout({ children }) {
   }, [loc]);
 
   // Close profile menu on route change
-  useEffect(() => { setProfileOpen(false); }, [loc.pathname, loc.search]);
+  useEffect(() => { setProfileOpen(false); setSidebarOpen(false); }, [loc.pathname, loc.search]);
 
-  // Close profile menu on outside click / Escape (works on touch + mouse + PWA)
+  // Lock body scroll when drawer/menu open (mobile)
+  useEffect(() => {
+    if (sidebarOpen) document.body.classList.add("ryh-lock");
+    else document.body.classList.remove("ryh-lock");
+    return () => document.body.classList.remove("ryh-lock");
+  }, [sidebarOpen]);
+
+  // Close profile menu on outside click / Escape
   useEffect(() => {
     if (!profileOpen) return;
     const onDown = (e) => {
@@ -61,7 +75,7 @@ export default function Layout({ children }) {
       try {
         const { data } = await api.get("/suggest", { params: { q } });
         setSuggestions(data.suggestions || []);
-      } catch {}
+      } catch { /* ignore */ }
     }, 200);
     return () => sugTimer.current && clearTimeout(sugTimer.current);
   }, [q]);
@@ -81,27 +95,27 @@ export default function Layout({ children }) {
     try { await yt.connect(); } catch { /* ignored */ }
   };
   const handleDisconnectYT = async () => {
-    try { await yt.disconnect(); } catch {}
+    try { await yt.disconnect(); } catch { /* ignored */ }
   };
 
   return (
-    <div className="min-h-screen ryh-no-copy" style={{ background: "var(--yt-bg)" }}>
+    <div className="min-h-screen ryh-no-copy ryh-no-overflow-x" style={{ background: "var(--yt-bg)" }}>
       {/* Header */}
-      <header className="sticky top-0 z-40 ryh-glass border-b border-white/5">
-        <div className="flex items-center gap-2 sm:gap-4 px-3 sm:px-5 h-14">
+      <header className="sticky top-0 z-40 ryh-glass border-b border-white/5 ryh-header">
+        <div className="flex items-center gap-1.5 sm:gap-3 px-2 sm:px-5 h-14">
           <button
-            className="p-2 rounded-full hover:bg-white/10"
+            className="p-2 rounded-full hover:bg-white/10 shrink-0"
             onClick={() => setSidebarOpen(true)}
             data-testid="open-sidebar-btn"
             aria-label="Open menu"
           >
             <Menu className="w-5 h-5" />
           </button>
-          <Link to="/" data-testid="header-logo-link">
+          <Link to="/" data-testid="header-logo-link" className="shrink-0">
             <Logo size={22} />
           </Link>
 
-          <form onSubmit={submit} className="flex-1 max-w-2xl mx-auto hidden sm:flex items-center">
+          <form onSubmit={submit} className="flex-1 max-w-2xl mx-auto hidden md:flex items-center">
             <div className="flex-1 relative">
               <input
                 value={q}
@@ -138,8 +152,11 @@ export default function Layout({ children }) {
             </button>
           </form>
 
+          {/* Spacer pushes the right cluster to edge on mobile */}
+          <div className="flex-1 md:hidden" />
+
           <button
-            className="sm:hidden p-2 rounded-full hover:bg-white/10 ml-auto"
+            className="md:hidden p-2 rounded-full hover:bg-white/10 shrink-0"
             onClick={() => nav("/search")}
             data-testid="mobile-search-btn"
             aria-label="Search"
@@ -147,11 +164,24 @@ export default function Layout({ children }) {
             <Search className="w-5 h-5" />
           </button>
 
-          <button className="p-2 rounded-full hover:bg-white/10 hidden sm:grid place-items-center" data-testid="header-notif-btn" aria-label="Notifications">
+          {/* Quick YouTube connect on mobile (visible when not connected) */}
+          {!yt.connected && (
+            <button
+              onClick={handleConnectYT}
+              className="md:hidden p-2 rounded-full hover:bg-red-500/15 shrink-0"
+              data-testid="mobile-yt-connect-btn"
+              aria-label="Connect YouTube"
+              title="Connect YouTube"
+            >
+              {yt.loading ? <Loader2 className="w-5 h-5 animate-spin text-red-500" /> : <Youtube className="w-5 h-5 text-red-500" />}
+            </button>
+          )}
+
+          <button className="p-2 rounded-full hover:bg-white/10 hidden sm:grid place-items-center shrink-0" data-testid="header-notif-btn" aria-label="Notifications">
             <Bell className="w-5 h-5" />
           </button>
 
-          <div className="relative" ref={profileRef}>
+          <div className="relative shrink-0" ref={profileRef}>
             <button
               type="button"
               onClick={() => setProfileOpen((o) => !o)}
@@ -170,7 +200,7 @@ export default function Layout({ children }) {
             {profileOpen && (
             <div
               role="menu"
-              className="absolute right-0 top-11 ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 min-w-[260px] max-w-[calc(100vw-1rem)] z-50"
+              className="ryh-profile-menu absolute right-0 top-11 ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 min-w-[260px] max-w-[calc(100vw-1rem)] z-50"
               data-testid="header-profile-menu"
             >
               <div className="px-3 py-2 border-b border-white/10">
@@ -245,7 +275,7 @@ export default function Layout({ children }) {
           </div>
         </div>
 
-        {/* Top-left developer credit */}
+        {/* Top-left developer credit (desktop only) */}
         <div className="absolute left-2 -bottom-5 text-[10px] text-neutral-500 hidden md:block pointer-events-none select-none">
           Developer @Ryhavean
         </div>
@@ -261,7 +291,10 @@ export default function Layout({ children }) {
         {sidebarOpen && (
           <div className="fixed inset-0 z-50 lg:hidden" onClick={() => setSidebarOpen(false)}>
             <div className="absolute inset-0 bg-black/60" />
-            <aside className="absolute left-0 top-0 bottom-0 w-64 ryh-glass border-r border-white/10 p-3 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <aside
+              className="absolute left-0 top-0 bottom-0 w-72 max-w-[85vw] ryh-glass border-r border-white/10 p-3 overflow-y-auto pt-safe pb-safe"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="flex items-center justify-between mb-3 px-2">
                 <Logo size={20} />
                 <button onClick={() => setSidebarOpen(false)} className="p-2 rounded-full hover:bg-white/10" data-testid="close-sidebar-btn">
@@ -269,14 +302,52 @@ export default function Layout({ children }) {
                 </button>
               </div>
               <SidebarLinks isAdmin={isAdmin} onClick={() => setSidebarOpen(false)} />
+
+              {/* Drawer YouTube login affordance */}
+              {!yt.connected && (
+                <button
+                  onClick={() => { setSidebarOpen(false); handleConnectYT(); }}
+                  className="mt-4 w-full flex items-center gap-2 px-3 py-2.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-white text-sm"
+                  data-testid="drawer-yt-connect-btn"
+                >
+                  {yt.loading
+                    ? <Loader2 className="w-4 h-4 animate-spin text-red-500" />
+                    : <Youtube className="w-5 h-5 text-red-500" />}
+                  <span className="font-medium">YouTube Login</span>
+                  <LinkIcon className="w-3.5 h-3.5 ml-auto text-neutral-300" />
+                </button>
+              )}
             </aside>
           </div>
         )}
 
-        <main className="flex-1 min-w-0">
+        <main className="flex-1 min-w-0 pb-20 md:pb-0">
           {children}
         </main>
       </div>
+
+      {/* Mobile bottom navigation */}
+      <nav
+        className="fixed bottom-0 left-0 right-0 z-30 md:hidden ryh-glass border-t border-white/10 pb-safe"
+        data-testid="mobile-bottom-nav"
+      >
+        <div className="flex items-center justify-around h-14">
+          {BOTTOM_NAV.map((n) => {
+            const active = loc.pathname === n.to || (n.to === "/search" && loc.pathname.startsWith("/search"));
+            return (
+              <Link
+                key={n.to}
+                to={n.to}
+                className={`flex flex-col items-center justify-center gap-0.5 flex-1 h-full ${active ? "text-white" : "text-neutral-400"}`}
+                data-testid={n.testid}
+              >
+                <n.icon className="w-5 h-5" />
+                <span className="text-[10px]">{n.label}</span>
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 }
