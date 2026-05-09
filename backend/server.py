@@ -8,7 +8,8 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import os, time, logging, asyncio, base64, uuid, random
+from urllib.parse import urlencode
+import os, time, logging, asyncio, base64, uuid, random, secrets
 import bcrypt, jwt, yt_dlp, httpx
 
 ROOT_DIR = Path(__file__).parent
@@ -22,6 +23,18 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "ryhavean-youtube-secret-change-me")
 JWT_ALGO = "HS256"; JWT_EXPIRE_DAYS = 30
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "ravenhadjiyevh@gmail.com")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ItWS*]iD)%$mSGa!")
+
+# ---------- Google OAuth (per-user YouTube login) ----------
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+# Public URL of your FRONTEND that handles the callback (e.g. https://ryoutube.example.com/youtube/callback)
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+GOOGLE_OAUTH_SCOPES = " ".join([
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/youtube.readonly",
+])
 
 app = FastAPI(title="Ryhavean YouTube")
 api = APIRouter(prefix="/api")
@@ -84,6 +97,18 @@ if _b64:
     except Exception as e:
         logger.warning(f"[cookies] decode failed: {e}")
 
+# ==================== Real client IP helper ====================
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    if request is None: return None
+    xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
+    if xff:
+        ip = xff.split(",")[0].strip()
+        if ip: return ip
+    xri = request.headers.get("x-real-ip") or request.headers.get("X-Real-IP")
+    if xri: return xri.strip()
+    try: return request.client.host  # type: ignore
+    except Exception: return None
+
 # ==================== yt-dlp (mirta-style: audio request → video extraction) ====================
 _USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
@@ -91,7 +116,7 @@ _USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
 ]
 
-def _yt_base_opts():
+def _yt_base_opts(client_ip: Optional[str] = None):
     opts = {
         "quiet": True, "no_warnings": True, "skip_download": True,
         "noplaylist": True, "socket_timeout": 15,
@@ -99,16 +124,22 @@ def _yt_base_opts():
         # CRITICAL: ios → android → web like mirta. NO mweb/tv (heavy bot detection).
         "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
     }
+    if client_ip:
+        # Forward end-user real IP so YouTube treats it as the user's request.
+        opts["http_headers"] = {
+            "X-Forwarded-For": client_ip,
+            "X-Real-IP": client_ip,
+        }
     if YT_COOKIES_FILE: opts["cookiefile"] = YT_COOKIES_FILE
     return opts
 
-def _make_search_opts():
-    o = _yt_base_opts()
+def _make_search_opts(client_ip: Optional[str] = None):
+    o = _yt_base_opts(client_ip)
     o.update({"extract_flat": True, "default_search": "ytsearch"})
     return o
 
-def _make_stream_opts():
-    o = _yt_base_opts()
+def _make_stream_opts(client_ip: Optional[str] = None):
+    o = _yt_base_opts(client_ip)
     # *** THE KEY FIX ***
     # Request AUDIO format → YouTube routes through low-bot-detection path.
     # In response, formats[] still contains video formats, we pick from there.
@@ -167,8 +198,8 @@ def _pick_thumb(thumbs, vid):
             if u and "vi_webp" not in u: return u
     return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
 
-def _search_sync(query, limit=24):
-    with yt_dlp.YoutubeDL(_make_search_opts()) as ydl:
+def _search_sync(query, limit=24, client_ip=None):
+    with yt_dlp.YoutubeDL(_make_search_opts(client_ip)) as ydl:
         info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
     entries = info.get("entries", []) if info else []
     out = []
@@ -187,14 +218,14 @@ def _search_sync(query, limit=24):
         })
     return out
 
-def _stream_sync(video_id):
+def _stream_sync(video_id, client_ip=None):
     """
     KEY TRICK: We request audio format from YouTube (low bot detection),
     but extract video URL from formats[] response array. YouTube doesn't
     apply heavy bot detection on audio-only requests.
     """
     url = f"https://www.youtube.com/watch?v={video_id}"
-    with yt_dlp.YoutubeDL(_make_stream_opts()) as ydl:
+    with yt_dlp.YoutubeDL(_make_stream_opts(client_ip)) as ydl:
         info = ydl.extract_info(url, download=False)
     if not info: return None
 
@@ -243,11 +274,11 @@ def _stream_sync(video_id):
         "upload_date": info.get("upload_date") or "",
     }
 
-async def yt_search(query, limit=24, ttl=TTL_SEARCH):
+async def yt_search(query, limit=24, ttl=TTL_SEARCH, client_ip=None):
     k = f"search::{query}::{limit}"
     h = await cget(k)
     if h is not None: return h
-    try: data = await _yt_call(_search_sync, query, limit)
+    try: data = await _yt_call(_search_sync, query, limit, client_ip)
     except Exception as e:
         logger.warning(f"search '{query}' failed: {str(e)[:200]}"); return []
     if data: await cset(k, data, ttl)
@@ -260,7 +291,7 @@ def _lock(vid):
     if L is None: L = asyncio.Lock(); _LOCKS[vid] = L
     return L
 
-async def resolve_stream(video_id, force=False):
+async def resolve_stream(video_id, force=False, client_ip=None):
     k = f"stream::{video_id}"
     if not force:
         h = await cget(k)
@@ -269,7 +300,7 @@ async def resolve_stream(video_id, force=False):
         if not force:
             h = await cget(k)
             if h is not None: return h
-        try: data = await _yt_call(_stream_sync, video_id)
+        try: data = await _yt_call(_stream_sync, video_id, client_ip)
         except Exception as e:
             logger.warning(f"resolve {video_id} failed: {str(e)[:200]}"); data = None
         if data and data.get("stream_url"): await cset(k, data, TTL_STREAM)
@@ -320,6 +351,9 @@ class HistoryIn(BaseModel):
     video: VideoRef; progress: float = 0.0
 class TrendBoostIn(BaseModel):
     video_id: str; boost: int = 100
+class YouTubeExchangeIn(BaseModel):
+    code: str
+    state: Optional[str] = None
 
 # ==================== Auth routes ====================
 @api.post("/auth/login")
@@ -388,6 +422,7 @@ async def admin_delete_user(user_id: str, _=Depends(require_admin)):
     await db.history.delete_many({"user_id": user_id})
     await db.likes.delete_many({"user_id": user_id})
     await db.watch_later.delete_many({"user_id": user_id})
+    await db.youtube_tokens.delete_many({"user_id": user_id})
     return {"ok": True}
 
 @api.post("/admin/trends/boost")
@@ -419,24 +454,31 @@ async def admin_cache_clear(_=Depends(require_admin)):
 @api.get("/")
 async def root():
     return {"app": "Ryhavean YouTube", "status": "ok",
-            "cookies_loaded": YT_COOKIES_FILE is not None}
+            "cookies_loaded": YT_COOKIES_FILE is not None,
+            "youtube_oauth_configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI)}
 
 @api.get("/search")
-async def search(q: str = Query(..., min_length=1), limit: int = 24, user=Depends(get_current_user)):
+async def search(q: str = Query(..., min_length=1), limit: int = 24,
+                 request: Request = None, user=Depends(get_current_user)):
     try:
-        results = await yt_search(q, limit=min(max(limit, 1), 30))
+        results = await yt_search(q, limit=min(max(limit, 1), 30), client_ip=_client_ip(request))
         return {"query": q, "count": len(results), "results": results}
     except Exception as e:
         logger.exception("search failed")
         raise HTTPException(502, f"Search failed: {e}")
 
 @api.get("/suggest")
-async def suggest(q: str = Query(..., min_length=1), user=Depends(get_current_user)):
+async def suggest(q: str = Query(..., min_length=1), request: Request = None, user=Depends(get_current_user)):
     url = "https://suggestqueries.google.com/complete/search"
     params = {"client": "youtube", "ds": "yt", "q": q, "hl": "en"}
+    headers = {"User-Agent": _USER_AGENTS[0]}
+    ip = _client_ip(request)
+    if ip:
+        headers["X-Forwarded-For"] = ip
+        headers["X-Real-IP"] = ip
     try:
         async with httpx.AsyncClient(timeout=8.0) as cx:
-            r = await cx.get(url, params=params, headers={"User-Agent": _USER_AGENTS[0]})
+            r = await cx.get(url, params=params, headers=headers)
         text = r.text
         s = text.find("["); e = text.rfind("]")
         import json as _json
@@ -452,11 +494,11 @@ async def trending_keywords(_=Depends(get_current_user)):
                          "Lo-fi", "Podcast", "Trailers", "Shorts", "Tech", "Comedy"]}
 
 @api.get("/video/{video_id}")
-async def video_meta(video_id: str, user=Depends(get_current_user)):
+async def video_meta(video_id: str, request: Request, user=Depends(get_current_user)):
     k = f"info::{video_id}"
     h = await cget(k)
     if h: return h
-    data = await resolve_stream(video_id)
+    data = await resolve_stream(video_id, client_ip=_client_ip(request))
     if not data: raise HTTPException(404, "Video not found")
     out = {"id": video_id, "title": data.get("title"), "channel": data.get("channel"),
            "channel_id": data.get("channel_id"), "duration": data.get("duration"),
@@ -468,7 +510,7 @@ async def video_meta(video_id: str, user=Depends(get_current_user)):
 
 @api.get("/stream/{video_id}")
 async def stream_meta(video_id: str, request: Request, proxy: int = 0, user=Depends(get_current_user)):
-    data = await resolve_stream(video_id)
+    data = await resolve_stream(video_id, client_ip=_client_ip(request))
     if not data or not data.get("stream_url"):
         raise HTTPException(404, "Stream not found")
     is_hls = bool(data.get("is_hls")); is_live = bool(data.get("is_live"))
@@ -497,11 +539,15 @@ _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=15.0)
 @api.get("/proxy-stream/{video_id}")
 async def proxy_stream(video_id: str, request: Request):
     range_h = request.headers.get("range")
-    data = await resolve_stream(video_id)
+    ip = _client_ip(request)
+    data = await resolve_stream(video_id, client_ip=ip)
     if not data or not data.get("stream_url"):
         raise HTTPException(404, "Stream not available")
     headers = {"User-Agent": _USER_AGENTS[0], "Accept": "*/*"}
     if range_h: headers["Range"] = range_h
+    if ip:
+        headers["X-Forwarded-For"] = ip
+        headers["X-Real-IP"] = ip
     upstream = httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True)
     req = upstream.build_request("GET", data["stream_url"], headers=headers)
     try:
@@ -511,7 +557,7 @@ async def proxy_stream(video_id: str, request: Request):
         raise HTTPException(502, "Upstream error")
     if resp.status_code in (403, 410):
         await resp.aclose(); await upstream.aclose()
-        data = await resolve_stream(video_id, force=True)
+        data = await resolve_stream(video_id, force=True, client_ip=ip)
         if not data or not data.get("stream_url"):
             raise HTTPException(404, "Stream re-resolve failed")
         upstream = httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True)
@@ -539,7 +585,8 @@ async def proxy_stream(video_id: str, request: Request):
 
 # ==================== Recommendations ====================
 @api.get("/recommendations")
-async def recommendations(video_id: Optional[str] = None, user=Depends(get_current_user)):
+async def recommendations(video_id: Optional[str] = None, request: Request = None,
+                          user=Depends(get_current_user)):
     queries: List[str] = []; seed_title = None
     if video_id:
         info = await db.play_counts.find_one({"id": video_id}, {"_id": 0, "title": 1, "channel": 1})
@@ -552,9 +599,10 @@ async def recommendations(video_id: Optional[str] = None, user=Depends(get_curre
     if not queries: queries = ["trending", "music", "news"]
     if seed_title: queries.insert(0, seed_title)
     seen = set(); final: List[dict] = []
+    ip = _client_ip(request)
     for q in queries[:3]:
         try:
-            res = await yt_search(q, limit=12)
+            res = await yt_search(q, limit=12, client_ip=ip)
             for r in res:
                 if r["id"] == video_id or r["id"] in seen: continue
                 seen.add(r["id"]); final.append(r)
@@ -578,10 +626,11 @@ HOME_QUERIES = {
 }
 
 @api.get("/home")
-async def home_feed(user=Depends(get_current_user)):
+async def home_feed(request: Request, user=Depends(get_current_user)):
     sections = {}
+    ip = _client_ip(request)
     async def _f(name, q):
-        try: sections[name] = await yt_search(q, limit=12, ttl=TTL_FEAT)
+        try: sections[name] = await yt_search(q, limit=12, ttl=TTL_FEAT, client_ip=ip)
         except Exception: sections[name] = []
     await asyncio.gather(*[_f(n, q) for n, q in HOME_QUERIES.items()])
     cw = await db.history.find({"user_id": user["id"], "progress": {"$gt": 5}},
@@ -593,9 +642,9 @@ async def categories(_=Depends(get_current_user)):
     return {"categories": list(HOME_QUERIES.keys())}
 
 @api.get("/category/{name}")
-async def category_feed(name: str, user=Depends(get_current_user)):
+async def category_feed(name: str, request: Request, user=Depends(get_current_user)):
     q = HOME_QUERIES.get(name, name)
-    res = await yt_search(q, limit=24, ttl=TTL_FEAT)
+    res = await yt_search(q, limit=24, ttl=TTL_FEAT, client_ip=_client_ip(request))
     return {"name": name, "results": res}
 
 # ==================== History / Likes / Watch later ====================
@@ -667,6 +716,434 @@ async def list_watch_later(user=Depends(get_current_user)):
     items = await db.watch_later.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return {"items": items}
 
+# ====================================================================
+# YouTube Account OAuth (per-user, persistent via refresh token)
+# ====================================================================
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+YT_API_BASE = "https://www.googleapis.com/youtube/v3"
+
+
+def _oauth_configured() -> bool:
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI)
+
+
+def _oauth_headers(client_ip: Optional[str] = None) -> dict:
+    h = {"User-Agent": _USER_AGENTS[0]}
+    if client_ip:
+        h["X-Forwarded-For"] = client_ip
+        h["X-Real-IP"] = client_ip
+    return h
+
+
+async def _yt_token_doc(user_id: str) -> Optional[dict]:
+    return await db.youtube_tokens.find_one({"user_id": user_id}, {"_id": 0})
+
+
+async def _refresh_yt_token(user_id: str, client_ip: Optional[str] = None) -> Optional[dict]:
+    doc = await _yt_token_doc(user_id)
+    if not doc or not doc.get("refresh_token"):
+        return None
+    data = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "refresh_token": doc["refresh_token"],
+        "grant_type": "refresh_token",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as cx:
+            r = await cx.post(GOOGLE_TOKEN_URL, data=data, headers=_oauth_headers(client_ip))
+        if r.status_code != 200:
+            logger.warning(f"[yt-oauth] refresh failed {r.status_code}: {r.text[:200]}")
+            # If refresh_token is invalid (revoked), drop it.
+            if r.status_code in (400, 401):
+                await db.youtube_tokens.delete_one({"user_id": user_id})
+            return None
+        tok = r.json()
+        update = {
+            "access_token": tok.get("access_token"),
+            "expires_at": time.time() + int(tok.get("expires_in", 3600)) - 60,
+            "scope": tok.get("scope", doc.get("scope", "")),
+            "token_type": tok.get("token_type", "Bearer"),
+            "refreshed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.youtube_tokens.update_one({"user_id": user_id}, {"$set": update})
+        doc.update(update)
+        return doc
+    except Exception as e:
+        logger.warning(f"[yt-oauth] refresh exception: {e}")
+        return None
+
+
+async def _get_valid_yt_access_token(user_id: str, client_ip: Optional[str] = None) -> Optional[str]:
+    doc = await _yt_token_doc(user_id)
+    if not doc: return None
+    if doc.get("access_token") and doc.get("expires_at", 0) > time.time():
+        return doc["access_token"]
+    refreshed = await _refresh_yt_token(user_id, client_ip)
+    return refreshed["access_token"] if refreshed and refreshed.get("access_token") else None
+
+
+async def _yt_api_get(user_id: str, path: str, params: dict, client_ip: Optional[str] = None) -> Optional[dict]:
+    token = await _get_valid_yt_access_token(user_id, client_ip)
+    if not token: return None
+    headers = _oauth_headers(client_ip)
+    headers["Authorization"] = f"Bearer {token}"
+    headers["Accept"] = "application/json"
+    url = f"{YT_API_BASE}/{path.lstrip('/')}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as cx:
+            r = await cx.get(url, headers=headers, params=params)
+        if r.status_code == 401:
+            # token might be stale - force refresh once
+            refreshed = await _refresh_yt_token(user_id, client_ip)
+            if not refreshed: return None
+            headers["Authorization"] = f"Bearer {refreshed['access_token']}"
+            async with httpx.AsyncClient(timeout=15.0) as cx:
+                r = await cx.get(url, headers=headers, params=params)
+        if r.status_code != 200:
+            logger.warning(f"[yt-api] {path} -> {r.status_code}: {r.text[:200]}")
+            return None
+        return r.json()
+    except Exception as e:
+        logger.warning(f"[yt-api] {path} exception: {e}")
+        return None
+
+
+def _yt_thumb(snippet: dict, vid: str = "") -> str:
+    th = (snippet or {}).get("thumbnails") or {}
+    for k in ("maxres", "high", "medium", "standard", "default"):
+        if k in th and th[k].get("url"):
+            return th[k]["url"]
+    if vid:
+        return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+    return ""
+
+
+def _iso_duration_to_seconds(s: str) -> int:
+    if not s or not s.startswith("P"): return 0
+    import re
+    m = re.match(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", s)
+    if not m: return 0
+    h, mi, se = m.groups()
+    return int(h or 0) * 3600 + int(mi or 0) * 60 + int(se or 0)
+
+
+# ----- OAuth endpoints -----
+
+@api.get("/youtube/auth/url")
+async def youtube_auth_url(user=Depends(get_current_user)):
+    if not _oauth_configured():
+        raise HTTPException(503, "YouTube OAuth not configured on server")
+    state = secrets.token_urlsafe(24)
+    await db.youtube_oauth_states.insert_one({
+        "state": state, "user_id": user["id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": time.time() + 600,  # 10 min
+    })
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": GOOGLE_OAUTH_SCOPES,
+        "access_type": "offline",      # → returns refresh_token
+        "prompt": "consent",           # → ensures refresh_token on every connect
+        "include_granted_scopes": "true",
+        "state": state,
+    }
+    return {"url": f"{GOOGLE_AUTH_URL}?{urlencode(params)}", "state": state}
+
+
+@api.post("/youtube/auth/exchange")
+async def youtube_auth_exchange(body: YouTubeExchangeIn, request: Request, user=Depends(get_current_user)):
+    if not _oauth_configured():
+        raise HTTPException(503, "YouTube OAuth not configured on server")
+    if not body.code:
+        raise HTTPException(400, "Missing code")
+    if body.state:
+        st = await db.youtube_oauth_states.find_one({"state": body.state})
+        if not st or st.get("user_id") != user["id"] or st.get("expires_at", 0) < time.time():
+            raise HTTPException(400, "Invalid or expired state")
+        await db.youtube_oauth_states.delete_one({"state": body.state})
+
+    ip = _client_ip(request)
+    data = {
+        "code": body.code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as cx:
+            r = await cx.post(GOOGLE_TOKEN_URL, data=data, headers=_oauth_headers(ip))
+    except Exception as e:
+        raise HTTPException(502, f"Token exchange failed: {e}")
+    if r.status_code != 200:
+        logger.warning(f"[yt-oauth] exchange {r.status_code}: {r.text[:300]}")
+        raise HTTPException(400, "Authorization code rejected by Google")
+    tok = r.json()
+
+    # fetch user profile
+    profile = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as cx:
+            pr = await cx.get(GOOGLE_USERINFO_URL,
+                              headers={**_oauth_headers(ip),
+                                       "Authorization": f"Bearer {tok.get('access_token','')}"})
+        if pr.status_code == 200:
+            profile = pr.json()
+    except Exception: pass
+
+    # fetch primary YouTube channel
+    yt_channel = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as cx:
+            cr = await cx.get(f"{YT_API_BASE}/channels",
+                              params={"part": "snippet,statistics", "mine": "true"},
+                              headers={**_oauth_headers(ip),
+                                       "Authorization": f"Bearer {tok.get('access_token','')}"})
+        if cr.status_code == 200:
+            items = (cr.json() or {}).get("items") or []
+            if items:
+                it = items[0]
+                yt_channel = {
+                    "channel_id": it.get("id"),
+                    "title": (it.get("snippet") or {}).get("title"),
+                    "thumbnail": _yt_thumb(it.get("snippet")),
+                    "subscriber_count": int((it.get("statistics") or {}).get("subscriberCount") or 0),
+                }
+    except Exception: pass
+
+    expires_at = time.time() + int(tok.get("expires_in", 3600)) - 60
+    doc = {
+        "user_id": user["id"],
+        "access_token": tok.get("access_token"),
+        # Google only returns refresh_token on FIRST consent; preserve old one if missing.
+        "scope": tok.get("scope", GOOGLE_OAUTH_SCOPES),
+        "token_type": tok.get("token_type", "Bearer"),
+        "expires_at": expires_at,
+        "google_email": profile.get("email"),
+        "google_name": profile.get("name"),
+        "google_picture": profile.get("picture"),
+        "google_sub": profile.get("sub"),
+        "yt_channel": yt_channel,
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if tok.get("refresh_token"):
+        doc["refresh_token"] = tok["refresh_token"]
+
+    existing = await _yt_token_doc(user["id"])
+    if existing and not doc.get("refresh_token") and existing.get("refresh_token"):
+        doc["refresh_token"] = existing["refresh_token"]
+
+    await db.youtube_tokens.update_one({"user_id": user["id"]}, {"$set": doc}, upsert=True)
+    return {
+        "ok": True,
+        "google": {"email": doc.get("google_email"), "name": doc.get("google_name"),
+                   "picture": doc.get("google_picture")},
+        "channel": yt_channel,
+    }
+
+
+@api.get("/youtube/auth/status")
+async def youtube_auth_status(user=Depends(get_current_user)):
+    doc = await _yt_token_doc(user["id"])
+    if not doc:
+        return {"connected": False, "configured": _oauth_configured()}
+    return {
+        "connected": True,
+        "configured": _oauth_configured(),
+        "google": {"email": doc.get("google_email"), "name": doc.get("google_name"),
+                   "picture": doc.get("google_picture")},
+        "channel": doc.get("yt_channel") or {},
+        "connected_at": doc.get("connected_at"),
+        "scope": doc.get("scope", ""),
+    }
+
+
+@api.post("/youtube/auth/disconnect")
+async def youtube_auth_disconnect(request: Request, user=Depends(get_current_user)):
+    doc = await _yt_token_doc(user["id"])
+    if not doc:
+        return {"ok": True}
+    tok = doc.get("refresh_token") or doc.get("access_token")
+    if tok:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as cx:
+                await cx.post(GOOGLE_REVOKE_URL, params={"token": tok},
+                              headers=_oauth_headers(_client_ip(request)))
+        except Exception: pass
+    await db.youtube_tokens.delete_one({"user_id": user["id"]})
+    return {"ok": True}
+
+
+# ----- YouTube data endpoints (per-user) -----
+
+@api.get("/youtube/me/channel")
+async def yt_me_channel(request: Request, user=Depends(get_current_user)):
+    ip = _client_ip(request)
+    data = await _yt_api_get(user["id"], "channels",
+                             {"part": "snippet,statistics,contentDetails", "mine": "true"}, ip)
+    if not data: raise HTTPException(401, "YouTube not connected")
+    items = data.get("items") or []
+    if not items: return {"channel": None}
+    it = items[0]
+    sn = it.get("snippet") or {}
+    st = it.get("statistics") or {}
+    cd = it.get("contentDetails") or {}
+    return {"channel": {
+        "id": it.get("id"),
+        "title": sn.get("title"),
+        "description": sn.get("description"),
+        "thumbnail": _yt_thumb(sn),
+        "subscriber_count": int(st.get("subscriberCount") or 0),
+        "view_count": int(st.get("viewCount") or 0),
+        "video_count": int(st.get("videoCount") or 0),
+        "uploads_playlist": ((cd.get("relatedPlaylists") or {}).get("uploads")),
+        "likes_playlist": ((cd.get("relatedPlaylists") or {}).get("likes")),
+    }}
+
+
+@api.get("/youtube/me/subscriptions")
+async def yt_me_subscriptions(request: Request, max_results: int = 30, user=Depends(get_current_user)):
+    ip = _client_ip(request)
+    data = await _yt_api_get(user["id"], "subscriptions",
+                             {"part": "snippet", "mine": "true", "maxResults": max(1, min(max_results, 50)),
+                              "order": "alphabetical"}, ip)
+    if not data: raise HTTPException(401, "YouTube not connected")
+    out = []
+    for it in data.get("items") or []:
+        sn = it.get("snippet") or {}
+        rid = (sn.get("resourceId") or {})
+        out.append({
+            "channel_id": rid.get("channelId"),
+            "title": sn.get("title"),
+            "description": sn.get("description"),
+            "thumbnail": _yt_thumb(sn),
+            "published_at": sn.get("publishedAt"),
+        })
+    return {"subscriptions": out, "count": len(out)}
+
+
+def _videos_from_playlist_items(items: list) -> list:
+    out = []
+    for it in items or []:
+        sn = it.get("snippet") or {}
+        cd = it.get("contentDetails") or {}
+        vid = cd.get("videoId") or (sn.get("resourceId") or {}).get("videoId")
+        if not vid: continue
+        out.append({
+            "id": vid,
+            "title": sn.get("title") or "Untitled",
+            "channel": sn.get("videoOwnerChannelTitle") or sn.get("channelTitle") or "",
+            "channel_id": sn.get("videoOwnerChannelId") or sn.get("channelId") or "",
+            "duration": 0,
+            "view_count": 0,
+            "thumbnail": _yt_thumb(sn, vid),
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "published_at": sn.get("publishedAt") or cd.get("videoPublishedAt"),
+        })
+    return out
+
+
+async def _enrich_videos_with_stats(user_id: str, videos: list, ip: Optional[str]) -> list:
+    """Fetch duration + viewCount for a batch of videos via videos.list."""
+    if not videos: return videos
+    ids = [v["id"] for v in videos][:50]
+    data = await _yt_api_get(user_id, "videos",
+                             {"part": "contentDetails,statistics", "id": ",".join(ids)}, ip)
+    if not data: return videos
+    by_id = {it["id"]: it for it in (data.get("items") or [])}
+    for v in videos:
+        it = by_id.get(v["id"])
+        if not it: continue
+        cd = it.get("contentDetails") or {}
+        st = it.get("statistics") or {}
+        v["duration"] = _iso_duration_to_seconds(cd.get("duration") or "")
+        v["view_count"] = int(st.get("viewCount") or 0)
+    return videos
+
+
+@api.get("/youtube/me/liked")
+async def yt_me_liked(request: Request, max_results: int = 30, user=Depends(get_current_user)):
+    """User's liked videos (LL playlist)."""
+    ip = _client_ip(request)
+    data = await _yt_api_get(user["id"], "playlistItems",
+                             {"part": "snippet,contentDetails",
+                              "playlistId": "LL",
+                              "maxResults": max(1, min(max_results, 50))}, ip)
+    if not data:
+        raise HTTPException(401, "YouTube not connected")
+    videos = _videos_from_playlist_items(data.get("items") or [])
+    videos = await _enrich_videos_with_stats(user["id"], videos, ip)
+    return {"videos": videos, "count": len(videos)}
+
+
+@api.get("/youtube/me/recent")
+async def yt_me_recent(request: Request, max_results: int = 30, user=Depends(get_current_user)):
+    """
+    YouTube watch history is no longer exposed via the Data API (deprecated).
+    As a close substitute we return the most recent uploads from the user's
+    subscribed channels — which is what the YouTube home page actually shows.
+    """
+    ip = _client_ip(request)
+    subs = await _yt_api_get(user["id"], "subscriptions",
+                             {"part": "snippet", "mine": "true",
+                              "maxResults": 30, "order": "unread"}, ip)
+    if not subs:
+        raise HTTPException(401, "YouTube not connected")
+    chan_ids = []
+    for it in (subs.get("items") or []):
+        rid = ((it.get("snippet") or {}).get("resourceId") or {})
+        cid = rid.get("channelId")
+        if cid: chan_ids.append(cid)
+    chan_ids = chan_ids[:10]  # cap to control cost
+
+    async def _fetch_uploads(cid: str):
+        ch = await _yt_api_get(user["id"], "channels",
+                               {"part": "contentDetails", "id": cid}, ip)
+        if not ch: return []
+        items = ch.get("items") or []
+        if not items: return []
+        upl = ((items[0].get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
+        if not upl: return []
+        pl = await _yt_api_get(user["id"], "playlistItems",
+                               {"part": "snippet,contentDetails", "playlistId": upl,
+                                "maxResults": 5}, ip)
+        if not pl: return []
+        return _videos_from_playlist_items(pl.get("items") or [])
+
+    results = await asyncio.gather(*[_fetch_uploads(c) for c in chan_ids], return_exceptions=True)
+    flat: List[dict] = []
+    for r in results:
+        if isinstance(r, list): flat.extend(r)
+    # newest first
+    flat.sort(key=lambda v: v.get("published_at") or "", reverse=True)
+    flat = flat[: max(1, min(max_results, 50))]
+    flat = await _enrich_videos_with_stats(user["id"], flat, ip)
+    return {"videos": flat, "count": len(flat)}
+
+
+@api.get("/youtube/me/recommendations")
+async def yt_me_recommendations(request: Request, user=Depends(get_current_user)):
+    """
+    Recommendations sourced from the user's own YouTube account:
+    blends recent uploads from subscribed channels + their liked-video tags.
+    """
+    ip = _client_ip(request)
+    # Reuse /recent under the hood
+    try:
+        recent = await yt_me_recent(request, max_results=30, user=user)  # type: ignore
+        videos = recent.get("videos") or []
+    except HTTPException:
+        raise
+    return {"results": videos}
+
+
 # ==================== Background ====================
 async def _prune_loop():
     while True:
@@ -674,6 +1151,7 @@ async def _prune_loop():
             await asyncio.sleep(3600)
             res = await db.yt_cache.delete_many({"expires_at": {"$lt": time.time()}})
             if res.deleted_count: logger.info(f"[cache] pruned {res.deleted_count}")
+            await db.youtube_oauth_states.delete_many({"expires_at": {"$lt": time.time()}})
         except asyncio.CancelledError: break
         except Exception as e: logger.warning(f"[cache] {e}")
 
@@ -699,6 +1177,9 @@ async def _ensure_indexes():
         await db.history.create_index([("user_id", 1), ("played_at", -1)])
         await db.likes.create_index([("user_id", 1), ("video_id", 1)], unique=True)
         await db.watch_later.create_index([("user_id", 1), ("video_id", 1)], unique=True)
+        await db.youtube_tokens.create_index("user_id", unique=True)
+        await db.youtube_oauth_states.create_index("state", unique=True)
+        await db.youtube_oauth_states.create_index("expires_at")
     except Exception as e: logger.warning(f"index: {e}")
 
 app.include_router(api)
@@ -713,7 +1194,9 @@ async def _startup():
     await _ensure_admin()
     await _ensure_indexes()
     _bg.append(asyncio.create_task(_prune_loop()))
-    logger.info(f"[startup] cookies={'YES' if YT_COOKIES_FILE else 'NO'} | mode=audio-request→video-extract (mirta-style)")
+    logger.info(f"[startup] cookies={'YES' if YT_COOKIES_FILE else 'NO'} | "
+                f"oauth={'YES' if _oauth_configured() else 'NO'} | "
+                f"mode=audio-request→video-extract (mirta-style)")
 
 @app.on_event("shutdown")
 async def _shutdown():
