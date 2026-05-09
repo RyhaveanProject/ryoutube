@@ -164,8 +164,8 @@ export default function Layout({ children }) {
             <Search className="w-5 h-5" />
           </button>
 
-          {/* Quick YouTube connect on mobile (visible when not connected) */}
-          {!yt.connected && (
+          {/* Quick YouTube connect on mobile (visible when logged in but YT not connected) */}
+          {user && !yt.connected && (
             <button
               onClick={handleConnectYT}
               className="md:hidden p-2 rounded-full hover:bg-red-500/15 shrink-0"
@@ -182,6 +182,15 @@ export default function Layout({ children }) {
           </button>
 
           <div className="relative shrink-0" ref={profileRef}>
+            {!user ? (
+              <Link
+                to="/login"
+                className="hidden sm:inline-flex items-center px-3 py-1.5 rounded-full border border-blue-400/40 text-blue-400 hover:bg-blue-500/10 text-sm shrink-0"
+                data-testid="header-signin-link"
+              >
+                Sign in
+              </Link>
+            ) : (
             <button
               type="button"
               onClick={() => setProfileOpen((o) => !o)}
@@ -191,13 +200,13 @@ export default function Layout({ children }) {
               data-testid="header-profile-btn"
             >
               {yt.connected && yt.google?.picture ? (
-           
-                <img src={yt.google.picture} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                <img src={yt.google.picture} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               ) : (
                 (user?.email || "U").charAt(0).toUpperCase()
               )}
             </button>
-            {profileOpen && (
+            )}
+            {profileOpen && user && (
             <div
               role="menu"
               className="ryh-profile-menu fixed ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 z-50"
