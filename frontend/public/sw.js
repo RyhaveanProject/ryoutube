@@ -1,59 +1,30 @@
 /* Ryhavean YT — Service Worker
-   - PWA shell cache
-   - Ad/tracker request blocking (works for the PWA + web app)
+   - PWA shell cache (stale-while-revalidate)
+   - Ad/tracker request blocking
+   - Offline fallback
 */
-const CACHE = 'ryh-yt-shell-v2';
+const CACHE = 'ryh-yt-shell-v3';
 const SHELL = ['/', '/index.html', '/manifest.json'];
+const OFFLINE_URL = '/index.html';
 
-/* ---------- Ad / tracker block-list ---------- */
-/* These are the hosts and path fragments YouTube + Google use for ads,
-   tracking and click telemetry. Blocking them at the SW layer means the
-   browser never even fires the requests for the page or the embedded
-   iframes/PWA — completely ad-free, no extension required. */
 const AD_HOSTS = [
-  'doubleclick.net',
-  'googleadservices.com',
-  'googlesyndication.com',
-  'googletagservices.com',
-  'googletagmanager.com',
-  'google-analytics.com',
-  'analytics.google.com',
-  'pagead2.googlesyndication.com',
-  'static.doubleclick.net',
-  'imasdk.googleapis.com',
-  'play.google.com/log',
-  'youtube.com/api/stats/ads',
-  'youtube.com/pagead',
-  'youtube.com/ptracking',
-  'youtube.com/get_midroll_info',
-  'youtube.com/api/stats/qoe',
-  'youtube.com/api/stats/atr',
-  'youtube.com/api/stats/watchtime',
-  'youtubei/v1/log_event',
-  'ad.doubleclick.net',
-  'securepubads.g.doubleclick.net',
-  's0.2mdn.net',
-  'adservice.google.com',
+  'doubleclick.net', 'googleadservices.com', 'googlesyndication.com',
+  'googletagservices.com', 'googletagmanager.com', 'google-analytics.com',
+  'analytics.google.com', 'pagead2.googlesyndication.com',
+  'static.doubleclick.net', 'imasdk.googleapis.com', 'play.google.com/log',
+  'youtube.com/api/stats/ads', 'youtube.com/pagead', 'youtube.com/ptracking',
+  'youtube.com/get_midroll_info', 'youtube.com/api/stats/qoe',
+  'youtube.com/api/stats/atr', 'youtube.com/api/stats/watchtime',
+  'youtubei/v1/log_event', 'ad.doubleclick.net',
+  'securepubads.g.doubleclick.net', 's0.2mdn.net', 'adservice.google.com',
 ];
 
 const AD_PATH_FRAGMENTS = [
-  '/pagead/',
-  '/ads?',
-  '/ads/',
-  '/ad_status',
-  '/ad_data',
-  '/get_midroll_',
-  '/ptracking',
-  '/api/stats/ads',
-  '/api/stats/qoe',
-  '/api/stats/atr',
-  '/api/stats/watchtime',
-  '/log_event',
-  '/youtubei/v1/player/ad_break',
-  '/youtubei/v1/log_event',
-  '/api/stats/playback',
-  '/api/stats/delayplay',
-  '/csi_204',
+  '/pagead/', '/ads?', '/ads/', '/ad_status', '/ad_data',
+  '/get_midroll_', '/ptracking', '/api/stats/ads', '/api/stats/qoe',
+  '/api/stats/atr', '/api/stats/watchtime', '/log_event',
+  '/youtubei/v1/player/ad_break', '/youtubei/v1/log_event',
+  '/api/stats/playback', '/api/stats/delayplay', '/csi_204',
 ];
 
 function isAdRequest(url) {
@@ -85,19 +56,28 @@ self.addEventListener('fetch', (e) => {
   let url;
   try { url = new URL(req.url); } catch { return; }
 
-  /* 1. Hard-block any ad/tracker request */
   if (isAdRequest(url)) {
     e.respondWith(new Response('', { status: 204, statusText: 'Blocked by Ryhavean Ad Block' }));
     return;
   }
 
-  /* 2. Don't touch our API or media streams (range requests must pass through) */
+  // Don't cache API calls or media streams (range requests must pass through)
   if (url.pathname.includes('/api/') || req.destination === 'video' || req.destination === 'audio') {
     return;
   }
   if (req.method !== 'GET') return;
 
-  /* 3. Stale-while-revalidate for app shell */
+  // Navigation requests: try network, fall back to cached shell on failure
+  if (req.mode === 'navigate') {
+    e.respondWith(
+      fetch(req).catch(() =>
+        caches.match(OFFLINE_URL).then((c) => c || new Response('', { status: 503 }))
+      )
+    );
+    return;
+  }
+
+  // Static asset: stale-while-revalidate
   e.respondWith(
     caches.match(req).then((cached) => {
       const fetcher = fetch(req)
