@@ -1,0 +1,31 @@
+/**
+ * Cloudflare Workers Static Assets konfiqurasiyası
+ *
+ * Bu fayl frontend qovluğunda (yarn build qaçırılan yerdə) yerləşir.
+ * Deploy üçün:
+ *   cd frontend
+ *   yarn install --frozen-lockfile
+ *   yarn build
+ *   npx wrangler deploy
+ *
+ * REACT_APP_BACKEND_URL build zamanı dəyişən kimi təyin edilməlidir
+ * (məs. Cloudflare Workers project -> Settings -> Variables and Secrets,
+ *  yaxud `REACT_APP_BACKEND_URL=https://<backend>.onrender.com yarn build`).
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ryoutube",
+  "compatibility_date": "2025-01-15",
+  "assets": {
+    "directory": "./build",
+    /**
+     * SPA fallback — Cloudflare bilinməyən marşrutlar üçün
+     * (məs. /youtube/callback, /login, /watch/:id) index.html qaytarır.
+     * Bunsuz callback URL-i 0 byte fayl kimi yüklənir.
+     */
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
