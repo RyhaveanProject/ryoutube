@@ -141,6 +141,7 @@ export default function Watch() {
             isHls={!!stream.is_hls}
             isLive={!!stream.is_live}
             skipSegments={skipSegments}
+            embedUrl={stream.is_embed ? stream.embed_url : ""}
           />
         )}
         </div>
