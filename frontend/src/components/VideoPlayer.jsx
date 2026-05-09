@@ -20,6 +20,7 @@ export default function VideoPlayer({
   autoPlay = true,
   isHls = false,
   isLive = false,
+  skipSegments = [],
 }) {
   const ref = useRef(null);
   const hlsRef = useRef(null);
@@ -119,6 +120,19 @@ export default function VideoPlayer({
       try {
         if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1));
       } catch {}
+      // Auto-skip in-video sponsor / ad segments (SponsorBlock-style)
+      try {
+        if (skipSegments && skipSegments.length) {
+          const t = v.currentTime;
+          for (let i = 0; i < skipSegments.length; i++) {
+            const s = skipSegments[i];
+            if (t >= s.start && t < s.end - 0.4) {
+              v.currentTime = s.end;
+              break;
+            }
+          }
+        }
+      } catch {}
     };
     const onMeta = () => setDur(v.duration || 0);
     const onPlay = () => setPlaying(true);
@@ -136,7 +150,7 @@ export default function VideoPlayer({
       v.removeEventListener("pause", onPause);
       v.removeEventListener("ended", onEnd);
     };
-  }, [onProgress, onEnded]);
+  }, [onProgress, onEnded, skipSegments]);
 
   const toggle = useCallback(() => {
     const v = ref.current; if (!v) return;
