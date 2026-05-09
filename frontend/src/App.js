@@ -17,18 +17,22 @@ import { HistoryPage, LikedPage, WatchLaterPage } from "./pages/Lists";
 import YouTubeCallback from "./pages/YouTubeCallback";
 import { Loader2 } from "lucide-react";
 
-function ProtectedShell({ children }) {
-  const { user, ready, deviceBlocked } = useAuth();
-  const loc = useLocation();
+/**
+ * Public shell — renders the Layout for ALL users (guest or signed-in).
+ * Per user request, the app no longer forces a login wall: the general
+ * feed is browsable without an account. Login still works for users who
+ * want personalised history/likes/admin.
+ */
+function PublicShell({ children }) {
+  const { ready, deviceBlocked } = useAuth();
   if (!ready) return <FullPageLoader />;
   if (deviceBlocked) return <Navigate to="/blocked" replace />;
-  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
   return <Layout>{children}</Layout>;
 }
 
 function FullPageLoader() {
   return (
-    <div className="min-h-screen grid place-items-center bg-black">
+    <div className="min-h-screen grid place-items-center bg-black" data-testid="app-loader">
       <Loader2 className="w-8 h-8 animate-spin text-neutral-500" />
     </div>
   );
@@ -36,7 +40,9 @@ function FullPageLoader() {
 
 function GuardedAdmin() {
   const { user } = useAuth();
-  if (!user || user.role !== "admin") return <Navigate to="/" replace />;
+  const loc = useLocation();
+  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  if (user.role !== "admin") return <Navigate to="/" replace />;
   return <Admin />;
 }
 
@@ -51,33 +57,20 @@ function App() {
       <AuthProvider>
         <BrowserRouter>
           <PlayerProvider>
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/blocked" element={<DeviceBlocked />} />
-            {/*
-              YouTube OAuth callback is intentionally PUBLIC.
-              Reasons:
-                - On return from Google, AuthProvider may still be running
-                  /auth/me. Wrapping this route in a guard caused users to
-                  be bounced to /login while the verify() call was in flight
-                  (or if it transiently failed), even though their session
-                  was perfectly valid in localStorage.
-                - Flow B (?yt=ok) doesn't need auth at all — it just bounces
-                  the user back to where they started.
-                - Flow A (?code=...) reads the bearer token from localStorage
-                  itself and recovers gracefully if it's missing.
-            */}
-            <Route path="/youtube/callback" element={<YouTubeCallback />} />
-            <Route path="/" element={<ProtectedShell><Home /></ProtectedShell>} />
-            <Route path="/search" element={<ProtectedShell><Search /></ProtectedShell>} />
-            <Route path="/watch/:id" element={<ProtectedShell><Watch /></ProtectedShell>} />
-            <Route path="/library" element={<ProtectedShell><Library /></ProtectedShell>} />
-            <Route path="/history" element={<ProtectedShell><HistoryPage /></ProtectedShell>} />
-            <Route path="/liked" element={<ProtectedShell><LikedPage /></ProtectedShell>} />
-            <Route path="/watch-later" element={<ProtectedShell><WatchLaterPage /></ProtectedShell>} />
-            <Route path="/admin" element={<ProtectedShell><GuardedAdmin /></ProtectedShell>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+            <Routes>
+              <Route path="/login" element={<Login />} />
+              <Route path="/blocked" element={<DeviceBlocked />} />
+              <Route path="/youtube/callback" element={<YouTubeCallback />} />
+              <Route path="/" element={<PublicShell><Home /></PublicShell>} />
+              <Route path="/search" element={<PublicShell><Search /></PublicShell>} />
+              <Route path="/watch/:id" element={<PublicShell><Watch /></PublicShell>} />
+              <Route path="/library" element={<PublicShell><Library /></PublicShell>} />
+              <Route path="/history" element={<PublicShell><HistoryPage /></PublicShell>} />
+              <Route path="/liked" element={<PublicShell><LikedPage /></PublicShell>} />
+              <Route path="/watch-later" element={<PublicShell><WatchLaterPage /></PublicShell>} />
+              <Route path="/admin" element={<PublicShell><GuardedAdmin /></PublicShell>} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
           </PlayerProvider>
         </BrowserRouter>
       </AuthProvider>
