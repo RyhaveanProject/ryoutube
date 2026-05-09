@@ -23,22 +23,19 @@ export default function Watch() {
       const [s, r, l, vMeta] = await Promise.all([
         api.get(`/stream/${id}`),
         api.get(`/recommendations`, { params: { video_id: id } }),
-        api.get(`/likes`),
-        // Rich metadata (channel description, etc.) — slow but worth it.
+        api.get(`/likes`).catch(() => ({ data: { ids: [] } })),
         api.get(`/video/${id}`).catch(() => ({ data: {} })),
       ]);
       const merged = { ...(s.data || {}), ...(vMeta.data || {}) };
-      // Prefer oEmbed/yt-dlp values from /video over the stub from /stream.
       if (vMeta.data && vMeta.data.title) merged.title = vMeta.data.title;
       if (vMeta.data && vMeta.data.channel) merged.channel = vMeta.data.channel;
       if (vMeta.data && vMeta.data.description) merged.description = vMeta.data.description;
       setMeta(merged);
-      setRecs(r.data.results || []);
-      setLiked((l.data.ids || []).includes(id));
+      setRecs(r.data?.results || []);
+      setLiked((l.data?.ids || []).includes(id));
       const wl = await api.get(`/watch-later`).catch(() => ({ data: { items: [] } }));
-      setSaved((wl.data.items || []).some((x) => x.video_id === id));
+      setSaved((wl.data?.items || []).some((x) => x.video_id === id));
 
-      // Hand off the video to the global player (continues across nav)
       player.open({
         id,
         title: merged.title || "",
@@ -54,10 +51,14 @@ export default function Watch() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  // Always reset scroll to top when switching videos so the new
+  // player isn't off-screen and the layout is predictable.
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "auto" });
+    load();
+  }, [load]);
 
-  // History tracking — coarse interval, since we no longer get
-  // per-frame events from the iframe directly here.
+  // Lightweight history pings
   useEffect(() => {
     if (!meta) return;
     const t = setInterval(() => {
@@ -84,7 +85,7 @@ export default function Watch() {
         });
         setLiked(true); toast.success("Added to liked");
       }
-    } catch { toast.error("Failed"); }
+    } catch { toast.error("Sign in to like videos"); }
   };
 
   const toggleSave = async () => {
@@ -98,27 +99,28 @@ export default function Watch() {
         });
         setSaved(true); toast.success("Saved to Watch Later");
       }
-    } catch { toast.error("Failed"); }
+    } catch { toast.error("Sign in to save videos"); }
   };
 
   const share = async () => {
     const url = `${window.location.origin}/watch/${id}`;
     try {
       if (navigator.share) await navigator.share({ title: meta?.title, url });
-      else {
-        await navigator.clipboard.writeText(url);
-        toast.success("Link copied");
-      }
+      else { await navigator.clipboard.writeText(url); toast.success("Link copied"); }
     } catch {}
   };
 
   return (
-    <div className="lg:flex lg:gap-6 lg:p-6">
+    <div className="lg:flex lg:gap-6 lg:p-6" data-testid="watch-page">
       <Toaster theme="dark" richColors position="top-center" />
-      <div className="flex-1 min-w-0 max-w-4xl">
+      <div className="flex-1 min-w-0 lg:max-w-4xl">
+        {/* On mobile we keep the player sticky at the top while the user
+            scrolls through description/recommendations. On desktop we
+            DO NOT make it sticky — fixes the bug where the open video
+            stayed glued on top of "Up next" recommendations. */}
         <div className="ryh-watch-player-wrap">
           {loading || !meta ? (
-            <div className="aspect-video bg-black grid place-items-center">
+            <div className="aspect-video bg-black grid place-items-center" data-testid="watch-player-skeleton">
               <Loader2 className="w-8 h-8 animate-spin text-neutral-400" />
             </div>
           ) : (
@@ -127,10 +129,7 @@ export default function Watch() {
         </div>
 
         <div className="px-3 lg:px-0 py-4">
-          <h1
-            className="text-lg sm:text-xl font-semibold text-white leading-snug"
-            data-testid="watch-title"
-          >
+          <h1 className="text-lg sm:text-xl font-semibold text-white leading-snug" data-testid="watch-title">
             {meta?.title || "Loading…"}
           </h1>
 
@@ -182,7 +181,6 @@ export default function Watch() {
             </div>
           </div>
 
-          {/* Description block — ALWAYS visible, never collapsed */}
           <div
             className="mt-4 bg-neutral-900 rounded-xl p-4 text-sm text-neutral-100"
             data-testid="watch-description"
@@ -200,8 +198,8 @@ export default function Watch() {
         </div>
       </div>
 
-      <aside className="lg:w-[400px] shrink-0 px-3 lg:px-0">
-        <h3 className="text-sm font-semibold text-neutral-300 mb-3">Up next</h3>
+      <aside className="lg:w-[400px] shrink-0 px-3 lg:px-0 lg:pr-4 pb-6" data-testid="watch-up-next">
+        <h3 className="text-sm font-semibold text-neutral-300 mb-3 sticky top-14 bg-[var(--yt-bg)] py-2 z-10">Up next</h3>
         <div className="space-y-3">
           {recs.map((v) => (
             <VideoCard key={v.id} video={v} layout="row" />
