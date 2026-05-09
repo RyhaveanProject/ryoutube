@@ -1,15 +1,27 @@
 {
-  "short_name": "Ryhavean YT",
+  "short_name": "RYouTube",
   "name": "Ryhavean YouTube",
+  "description": "RYouTube Premium",
   "icons": [
-    { "src": "icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
-    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+    { "src": "icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+    { "src": "icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "maskable" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
   ],
-  "start_url": ".",
+  "start_url": "/",
+  "id": "/",
   "display": "standalone",
-  "orientation": "portrait",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "any",
   "theme_color": "#0f0f0f",
   "background_color": "#0f0f0f",
   "scope": "/",
-  "categories": ["entertainment", "video", "music"]
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "categories": ["entertainment", "video", "music"],
+  "shortcuts": [
+    { "name": "Search", "short_name": "Search", "url": "/search", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "Library", "short_name": "Library", "url": "/library", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
+  ]
 }
