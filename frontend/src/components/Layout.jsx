@@ -178,7 +178,7 @@ export default function Layout({ children }) {
                 <div className="text-[11px] text-neutral-400">{user?.role}</div>
               </div>
 
-              {/* YouTube account block */}
+              {/* YouTube account block — always visible above Sign out */}
               <div className="border-b border-white/10 py-1.5">
                 {yt.connected ? (
                   <>
@@ -199,26 +199,26 @@ export default function Layout({ children }) {
                     <button
                       onClick={handleDisconnectYT}
                       disabled={yt.loading}
-                      className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm w-full text-left text-neutral-200"
+                      className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm w-full text-left text-white"
                       data-testid="yt-disconnect-btn"
                     >
-                      {yt.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlink2 className="w-4 h-4" />}
-                      Disconnect YouTube
+                      {yt.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlink2 className="w-4 h-4 text-red-500" />}
+                      <span>Disconnect YouTube</span>
                     </button>
                   </>
                 ) : (
                   <button
                     onClick={handleConnectYT}
-                    disabled={yt.loading || yt.configured === false}
-                    className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm w-full text-left disabled:opacity-50"
+                    disabled={yt.loading}
+                    className="flex items-center gap-2.5 px-3 py-2.5 hover:bg-red-500/15 rounded-lg text-sm w-full text-left bg-red-500/5 border border-red-500/20"
                     data-testid="yt-connect-btn"
-                    title={yt.configured === false ? "Server: GOOGLE_CLIENT_ID not configured" : "Connect your YouTube account"}
+                    title="Connect your YouTube account"
                   >
                     {yt.loading
                       ? <Loader2 className="w-4 h-4 animate-spin text-red-500" />
-                      : <Youtube className="w-4 h-4 text-red-500" />}
-                    <span className="text-white">YouTube Login</span>
-                    <LinkIcon className="w-3.5 h-3.5 ml-auto text-neutral-400" />
+                      : <Youtube className="w-5 h-5 text-red-500 shrink-0" />}
+                    <span className="text-white font-medium">YouTube Login</span>
+                    <LinkIcon className="w-3.5 h-3.5 ml-auto text-neutral-300" />
                   </button>
                 )}
               </div>
