@@ -18,15 +18,20 @@ import YouTubeCallback from "./pages/YouTubeCallback";
 import { Loader2 } from "lucide-react";
 
 /**
- * Public shell — renders the Layout for ALL users (guest or signed-in).
- * Per user request, the app no longer forces a login wall: the general
- * feed is browsable without an account. Login still works for users who
- * want personalised history/likes/admin.
+ * Protected shell — every visitor MUST be authenticated.
+ * Behaviour:
+ *   - If the user is already signed in (token persisted in localStorage),
+ *     auth.verify() resolves and we render the Layout — no extra prompt.
+ *   - If the user is a guest (no valid token), we redirect to /login.
+ *   - The /login, /blocked and /youtube/callback routes stay public so
+ *     fresh visitors and OAuth redirects still work.
  */
 function PublicShell({ children }) {
-  const { ready, deviceBlocked } = useAuth();
+  const { ready, deviceBlocked, user } = useAuth();
+  const loc = useLocation();
   if (!ready) return <FullPageLoader />;
   if (deviceBlocked) return <Navigate to="/blocked" replace />;
+  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
   return <Layout>{children}</Layout>;
 }
 
