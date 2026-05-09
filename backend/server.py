@@ -623,11 +623,16 @@ async def video_meta(video_id: str, request: Request, user=Depends(get_current_u
     if h: return h
     data = await resolve_stream(video_id, client_ip=_client_ip(request))
     if not data:
-        # Even meta extraction is blocked; return a stub so the UI can render
-        # the iframe player without throwing 404.
-        return {"id": video_id, "title": "YouTube video", "channel": "",
+        # Even meta extraction is blocked; try oEmbed (keyless) so we
+        # at least return the real title, channel and thumbnail rather
+        # than the literal placeholder "YouTube video".
+        oembed = await _yt_oembed(video_id) or {}
+        return {"id": video_id,
+                "title": oembed.get("title") or "YouTube video",
+                "channel": oembed.get("channel") or "",
                 "channel_id": "", "duration": 0,
-                "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                "thumbnail": oembed.get("thumbnail")
+                    or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
                 "description": "", "view_count": 0, "like_count": 0,
                 "upload_date": ""}
     out = {"id": video_id, "title": data.get("title"), "channel": data.get("channel"),
@@ -646,10 +651,16 @@ def _embed_url_for(video_id: str) -> str:
     )
 
 async def _embed_payload(video_id: str) -> dict:
-    """Instant-load embed response (no yt-dlp call). Looks up cached meta if any."""
+    """Instant-load embed response (no yt-dlp call). Looks up cached meta if any.
+
+    When yt-dlp / Piped extraction has never produced a title for this id
+    (cold cache) we still want to show the *real* video title instead of
+    the placeholder "YouTube video". YouTube's public oEmbed endpoint is
+    keyless, fast (<300ms) and immune to the bot-check that blocks
+    yt-dlp on cloud IPs, so we use it as a metadata fallback.
+    """
     meta = None
     try:
-        # Prefer richer cached info from previous extractions
         meta = await cget(f"info::{video_id}")
     except Exception:
         meta = None
@@ -659,6 +670,28 @@ async def _embed_payload(video_id: str) -> dict:
         except Exception:
             meta = None
     meta = meta or {}
+
+    # If we still don't have a title, hit YouTube's oEmbed endpoint.
+    if not meta.get("title"):
+        oembed = await _yt_oembed(video_id)
+        if oembed:
+            meta = {**meta, **oembed}
+            try:
+                # Persist so we don't hit oEmbed every load
+                await db.play_counts.update_one(
+                    {"id": video_id},
+                    {"$set": {
+                        "id": video_id,
+                        "title": meta.get("title") or "",
+                        "channel": meta.get("channel") or "",
+                        "thumbnail": meta.get("thumbnail") or "",
+                    }},
+                    upsert=True,
+                )
+                await cset(f"info::{video_id}", meta, TTL_INFO)
+            except Exception:
+                pass
+
     return {
         "video_id": video_id,
         "title": meta.get("title") or "YouTube video",
@@ -673,6 +706,29 @@ async def _embed_payload(video_id: str) -> dict:
         "is_live": False, "is_hls": False, "direct": False,
         "embed_url": _embed_url_for(video_id), "is_embed": True,
     }
+
+
+async def _yt_oembed(video_id: str) -> Optional[dict]:
+    """Public, keyless YouTube oEmbed → real title + channel + thumbnail."""
+    url = "https://www.youtube.com/oembed"
+    params = {"url": f"https://www.youtube.com/watch?v={video_id}", "format": "json"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as cx:
+            r = await cx.get(url, params=params,
+                             headers={"User-Agent": _USER_AGENTS[0]})
+        if r.status_code != 200:
+            return None
+        j = r.json() or {}
+        return {
+            "title": j.get("title") or "",
+            "channel": j.get("author_name") or "",
+            "thumbnail": j.get("thumbnail_url")
+                or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            "description": "",
+        }
+    except Exception:
+        return None
+
 
 @api.get("/stream/{video_id}")
 async def stream_meta(
