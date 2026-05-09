@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Search, Bell, Menu, Home, History, ThumbsUp, Clock, Library, Shield, LogOut, X } from "lucide-react";
+import { Search, Bell, Menu, Home, History, ThumbsUp, Clock, Library, Shield, LogOut, X, Youtube, LinkIcon, Unlink2, Loader2 } from "lucide-react";
 import Logo from "./Logo";
 import { useAuth } from "../lib/auth";
+import { useYouTube } from "../lib/youtube";
 import { api } from "../lib/api";
 
 const NAV = [
@@ -15,6 +16,7 @@ const NAV = [
 
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
+  const yt = useYouTube();
   const nav = useNavigate();
   const loc = useLocation();
   const [q, setQ] = useState("");
@@ -49,6 +51,13 @@ export default function Layout({ children }) {
   };
 
   const isAdmin = user?.role === "admin";
+
+  const handleConnectYT = async () => {
+    try { await yt.connect(); } catch { /* ignored */ }
+  };
+  const handleDisconnectYT = async () => {
+    try { await yt.disconnect(); } catch {}
+  };
 
   return (
     <div className="min-h-screen ryh-no-copy" style={{ background: "var(--yt-bg)" }}>
@@ -119,16 +128,67 @@ export default function Layout({ children }) {
 
           <div className="relative group">
             <button
-              className="w-9 h-9 rounded-full bg-gradient-to-br from-red-500 to-red-700 grid place-items-center text-white font-bold text-sm"
+              className="w-9 h-9 rounded-full bg-gradient-to-br from-red-500 to-red-700 grid place-items-center text-white font-bold text-sm overflow-hidden"
               data-testid="header-profile-btn"
             >
-              {(user?.email || "U").charAt(0).toUpperCase()}
+              {yt.connected && yt.google?.picture ? (
+                // eslint-disable-next-line jsx-a11y/alt-text
+                <img src={yt.google.picture} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              ) : (
+                (user?.email || "U").charAt(0).toUpperCase()
+              )}
             </button>
-            <div className="absolute right-0 top-11 ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 min-w-[200px] hidden group-hover:block">
+            <div className="absolute right-0 top-11 ryh-glass rounded-xl border border-white/10 shadow-2xl p-2 min-w-[260px] hidden group-hover:block">
               <div className="px-3 py-2 border-b border-white/10">
                 <div className="text-[13px] text-white truncate">{user?.email}</div>
                 <div className="text-[11px] text-neutral-400">{user?.role}</div>
               </div>
+
+              {/* YouTube account block */}
+              <div className="border-b border-white/10 py-1.5">
+                {yt.connected ? (
+                  <>
+                    <div className="px-3 py-2 flex items-center gap-2.5">
+                      {yt.google?.picture ? (
+                        // eslint-disable-next-line jsx-a11y/alt-text
+                        <img src={yt.google.picture} className="w-7 h-7 rounded-full" referrerPolicy="no-referrer" />
+                      ) : (
+                        <Youtube className="w-5 h-5 text-red-500" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12.5px] text-white truncate" data-testid="yt-connected-name">
+                          {yt.channel?.title || yt.google?.name || yt.google?.email || "YouTube"}
+                        </div>
+                        <div className="text-[10.5px] text-emerald-400">Connected</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleDisconnectYT}
+                      disabled={yt.loading}
+                      className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm w-full text-left text-neutral-200"
+                      data-testid="yt-disconnect-btn"
+                    >
+                      {yt.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlink2 className="w-4 h-4" />}
+                      Disconnect YouTube
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={handleConnectYT}
+                    disabled={yt.loading || yt.configured === false}
+                    className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm w-full text-left disabled:opacity-50"
+                    data-testid="yt-connect-btn"
+                    title={yt.configured === false ? "Server: GOOGLE_CLIENT_ID not configured" : "Connect your YouTube account"}
+                  >
+                    {yt.loading
+                      ? <Loader2 className="w-4 h-4 animate-spin text-red-500" />
+                      : <Youtube className="w-4 h-4 text-red-500" />}
+                    <span className="text-white">YouTube Login</span>
+                    <LinkIcon className="w-3.5 h-3.5 ml-auto text-neutral-400" />
+                  </button>
+                )}
+              </div>
+
               {isAdmin && (
                 <Link to="/admin" className="flex items-center gap-2 px-3 py-2 hover:bg-white/10 rounded-lg text-sm" data-testid="profile-admin-link">
                   <Shield className="w-4 h-4" /> Admin Panel
