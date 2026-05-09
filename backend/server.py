@@ -1,4 +1,3 @@
-GitHub → backend/server.py → ✏️ Edit → bütün məzmunu sil → bu kodu yapışdır → Commit directly to main
 from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
