@@ -12,9 +12,14 @@
   --yt-text-2: #aaaaaa;
   --yt-red: #ff0000;
   --yt-blue: #3ea6ff;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 }
 
 html, body, #root { height: 100%; }
+html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
   background: var(--yt-bg);
@@ -23,9 +28,20 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
+  /* iOS safe-area aware */
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
 }
 
 * { box-sizing: border-box; }
+img, video { max-width: 100%; }
+
+/* Safe-area helpers */
+.pt-safe { padding-top: var(--safe-top); }
+.pb-safe { padding-bottom: var(--safe-bottom); }
+.pl-safe { padding-left: var(--safe-left); }
+.pr-safe { padding-right: var(--safe-right); }
+.h-safe-top { height: var(--safe-top); }
 
 /* Disable text selection globally — re-enabled inside .ryh-allow-copy */
 body, .ryh-no-copy, .ryh-no-copy * {
@@ -130,3 +146,46 @@ input:focus, button:focus { outline: none; }
 .ryh-card:hover { transform: translateY(-2px); }
 .ryh-card .ryh-thumb { transition: border-radius 0.18s ease; }
 .ryh-card:hover .ryh-thumb { border-radius: 0; }
+
+/* ===== Mobile-first responsiveness fixes ===== */
+
+/* Ensure tap targets are big enough on touch devices */
+@media (hover: none) and (pointer: coarse) {
+  button, a, [role="button"] { -webkit-tap-highlight-color: transparent; }
+}
+
+/* Sticky header should sit below iOS notch */
+.ryh-header {
+  padding-top: var(--safe-top);
+}
+
+/* On very small screens, profile dropdown should not overflow */
+@media (max-width: 380px) {
+  .ryh-profile-menu {
+    right: 0 !important;
+    left: 0 !important;
+    min-width: 0 !important;
+    width: calc(100vw - 1rem) !important;
+    margin: 0 0.5rem;
+  }
+}
+
+/* Mobile bottom nav height (when used) */
+.ryh-bottom-nav-spacer { height: calc(56px + var(--safe-bottom)); }
+
+/* Avoid horizontal overflow caused by long descriptions/titles */
+.ryh-no-overflow-x { overflow-x: hidden; max-width: 100%; }
+
+/* iOS PWA: remove blue overlays on tap */
+* { -webkit-tap-highlight-color: rgba(0,0,0,0); }
+
+/* Make video player fill phone screen width */
+@media (max-width: 1023px) {
+  .ryh-watch-player-wrap {
+    margin-left: calc(-1 * var(--safe-left));
+    margin-right: calc(-1 * var(--safe-right));
+  }
+}
+
+/* Prevent iOS body scroll underneath when drawer/menu open */
+body.ryh-lock { overflow: hidden; touch-action: none; }
