@@ -3,6 +3,7 @@ import "./App.css";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { installCopyGuard } from "./lib/copyGuard";
+import { installAdBlock } from "./lib/adBlock";
 import Layout from "./components/Layout";
 import Login from "./pages/Login";
 import DeviceBlocked from "./pages/DeviceBlocked";
@@ -51,6 +52,7 @@ function GuardedAdmin() {
 function App() {
   useEffect(() => {
     installCopyGuard();
+    installAdBlock();
   }, []);
 
   return (
