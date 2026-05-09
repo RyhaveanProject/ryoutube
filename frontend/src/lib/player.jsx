@@ -354,10 +354,14 @@ function PlayerHost() {
     ? { position: "absolute", left: 0, top: 0, width: 110, height: "100%", border: 0, display: "block" }
     : { position: "absolute", left: 0, top: 0, width: "100%", height: "calc(100% - 40px)", border: 0, display: "block" };
 
-  // Sandbox: no allow-popups, no allow-top-navigation → clicks on
-  // YouTube's "Watch on YouTube" pill or the watermark cannot navigate
-  // away from our app.
-  const SANDBOX = "allow-scripts allow-same-origin allow-presentation";
+  // Sandbox: must allow popups + forms so YouTube's age-gate / consent
+  // / cookie-banner flows can complete inside the iframe. Without those
+  // flags some embeds refuse to start playback and just stay on a black
+  // poster (this was the "video açıldıqda qara ekranda qalır" report).
+  // We KEEP the sandbox so clicks on YouTube's "Watch on YouTube" pill
+  // open in a new tab instead of replacing our SPA — that requires
+  // allow-popups + allow-popups-to-escape-sandbox.
+  const SANDBOX = "allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox allow-forms";
 
   const hasNext = !!(queue && queue[0]);
 
