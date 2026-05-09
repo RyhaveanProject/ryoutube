@@ -662,32 +662,112 @@ async def trending_keywords(_=Depends(get_current_user)):
     return {"keywords": ["Music", "Gaming", "News", "Sports", "Movies", "Live",
                          "Lo-fi", "Podcast", "Trailers", "Shorts", "Tech", "Comedy"]}
 
+def _iso8601_duration_to_seconds(s: str) -> int:
+    """Convert ISO8601 duration (e.g. PT1H2M3S) to seconds. Returns 0 on invalid."""
+    if not s or not isinstance(s, str): return 0
+    import re as _re
+    m = _re.match(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", s.strip())
+    if not m: return 0
+    h, mm, ss = m.groups()
+    return int(h or 0) * 3600 + int(mm or 0) * 60 + int(ss or 0)
+
+
 @api.get("/video/{video_id}")
 async def video_meta(video_id: str, request: Request, user=Depends(get_current_user)):
+    """
+    Metadata for the watch page. NEVER calls yt-dlp (cloud IPs are bot-blocked,
+    so yt-dlp would just rotate 5 clients, fail, and waste 6+ seconds before
+    falling back to oEmbed anyway). Resolution order:
+      1. Memory / Mongo cache.
+      2. YouTube Data API v3, IF the current user has linked their YouTube
+         account (uses their OAuth access_token — not subject to bot-check).
+      3. Public oEmbed (keyless) merged with whatever we already have in
+         play_counts (title/channel/thumbnail seeded by previous searches).
+    The result is cached so subsequent visits are instant.
+    """
     k = f"info::{video_id}"
     h = await cget(k)
     if h: return h
-    data = await resolve_stream(video_id, client_ip=_client_ip(request))
-    if not data:
-        # Even meta extraction is blocked; try oEmbed (keyless) so we
-        # at least return the real title, channel and thumbnail rather
-        # than the literal placeholder "YouTube video".
+
+    info: Optional[dict] = None
+    ip = _client_ip(request)
+
+    # 1) YouTube Data API v3 via the signed-in user's OAuth token.
+    if user and user.get("id"):
+        try:
+            api_resp = await _yt_api_get(
+                user["id"], "videos",
+                {"part": "snippet,contentDetails,statistics", "id": video_id},
+                client_ip=ip,
+            )
+            if api_resp and not api_resp.get("__error__"):
+                items = api_resp.get("items") or []
+                if items:
+                    it = items[0]
+                    sn = it.get("snippet") or {}
+                    cd = it.get("contentDetails") or {}
+                    st = it.get("statistics") or {}
+                    thumbs = sn.get("thumbnails") or {}
+                    thumb = (
+                        (thumbs.get("maxres") or thumbs.get("high")
+                         or thumbs.get("medium") or thumbs.get("default") or {}).get("url")
+                        or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                    )
+                    info = {
+                        "id": video_id,
+                        "title": sn.get("title") or "",
+                        "channel": sn.get("channelTitle") or "",
+                        "channel_id": sn.get("channelId") or "",
+                        "duration": _iso8601_duration_to_seconds(cd.get("duration") or ""),
+                        "thumbnail": thumb,
+                        "description": sn.get("description") or "",
+                        "view_count": int(st.get("viewCount") or 0),
+                        "like_count": int(st.get("likeCount") or 0),
+                        "upload_date": (sn.get("publishedAt") or "")[:10].replace("-", ""),
+                    }
+        except Exception as _e:
+            info = None
+
+    # 2) Public oEmbed + cached play_counts fallback (works for guests too).
+    if not info:
+        try:
+            cached = await db.play_counts.find_one({"id": video_id}, {"_id": 0}) or {}
+        except Exception:
+            cached = {}
         oembed = await _yt_oembed(video_id) or {}
-        return {"id": video_id,
-                "title": oembed.get("title") or "YouTube video",
-                "channel": oembed.get("channel") or "",
-                "channel_id": "", "duration": 0,
-                "thumbnail": oembed.get("thumbnail")
-                    or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
-                "description": "", "view_count": 0, "like_count": 0,
-                "upload_date": ""}
-    out = {"id": video_id, "title": data.get("title"), "channel": data.get("channel"),
-           "channel_id": data.get("channel_id"), "duration": data.get("duration"),
-           "thumbnail": data.get("thumbnail"), "description": data.get("description"),
-           "view_count": data.get("view_count"), "like_count": data.get("like_count"),
-           "upload_date": data.get("upload_date")}
-    await cset(k, out, TTL_INFO)
-    return out
+        info = {
+            "id": video_id,
+            "title": oembed.get("title") or cached.get("title") or "YouTube video",
+            "channel": oembed.get("channel") or cached.get("channel") or "",
+            "channel_id": cached.get("channel_id") or "",
+            "duration": int(cached.get("duration") or 0),
+            "thumbnail": oembed.get("thumbnail") or cached.get("thumbnail")
+                or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            "description": cached.get("description") or "",
+            "view_count": int(cached.get("view_count") or 0),
+            "like_count": 0,
+            "upload_date": "",
+        }
+
+    # Persist a lightweight copy so other endpoints (recommendations, embed
+    # payload) can show the real title even before this endpoint is hit.
+    try:
+        await db.play_counts.update_one(
+            {"id": video_id},
+            {"$set": {
+                "id": video_id,
+                "title": info.get("title") or "",
+                "channel": info.get("channel") or "",
+                "thumbnail": info.get("thumbnail") or "",
+                "duration": info.get("duration") or 0,
+            }},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
+    await cset(k, info, TTL_INFO)
+    return info
 
 def _embed_url_for(video_id: str) -> str:
     return (
