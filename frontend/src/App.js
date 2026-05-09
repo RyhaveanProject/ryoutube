@@ -25,16 +25,6 @@ function ProtectedShell({ children }) {
   return <Layout>{children}</Layout>;
 }
 
-function ProtectedBare({ children }) {
-  // For routes that need auth but no chrome (e.g. OAuth callback)
-  const { user, ready, deviceBlocked } = useAuth();
-  const loc = useLocation();
-  if (!ready) return <FullPageLoader />;
-  if (deviceBlocked) return <Navigate to="/blocked" replace />;
-  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
-  return children;
-}
-
 function FullPageLoader() {
   return (
     <div className="min-h-screen grid place-items-center bg-black">
@@ -62,7 +52,20 @@ function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/blocked" element={<DeviceBlocked />} />
-            <Route path="/youtube/callback" element={<ProtectedBare><YouTubeCallback /></ProtectedBare>} />
+            {/*
+              YouTube OAuth callback is intentionally PUBLIC.
+              Reasons:
+                - On return from Google, AuthProvider may still be running
+                  /auth/me. Wrapping this route in a guard caused users to
+                  be bounced to /login while the verify() call was in flight
+                  (or if it transiently failed), even though their session
+                  was perfectly valid in localStorage.
+                - Flow B (?yt=ok) doesn't need auth at all — it just bounces
+                  the user back to where they started.
+                - Flow A (?code=...) reads the bearer token from localStorage
+                  itself and recovers gracefully if it's missing.
+            */}
+            <Route path="/youtube/callback" element={<YouTubeCallback />} />
             <Route path="/" element={<ProtectedShell><Home /></ProtectedShell>} />
             <Route path="/search" element={<ProtectedShell><Search /></ProtectedShell>} />
             <Route path="/watch/:id" element={<ProtectedShell><Watch /></ProtectedShell>} />
