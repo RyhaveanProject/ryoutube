@@ -116,16 +116,50 @@ _USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
 ]
 
-def _yt_base_opts(client_ip: Optional[str] = None):
+# Player-client groups tried in order. Each group is one yt-dlp attempt.
+# YouTube applies different bot-detection thresholds to each client surface,
+# so when one fails ("Sign in to confirm you're not a bot") we retry with
+# the next combination automatically. `tv_embedded` + `ios` historically
+# survives the bot check the longest on cloud IPs.
+_CLIENT_ROTATIONS = [
+    ["tv_embedded", "ios"],
+    ["ios", "android"],
+    ["android_vr", "android"],
+    ["mweb", "web_safari"],
+    ["web"],
+]
+
+# Optional PO Token + visitor data (set via env if you generate them externally).
+# yt-dlp accepts them through extractor_args["youtube"]["po_token"].
+_YT_PO_TOKEN = os.environ.get("YT_PO_TOKEN", "").strip()
+_YT_VISITOR_DATA = os.environ.get("YT_VISITOR_DATA", "").strip()
+
+# Piped instances – used as a last-resort fallback when every yt-dlp client
+# rotation fails. They run their own InnerTube extraction off-cluster, so
+# they bypass YouTube's "this IP looks like a bot" check entirely.
+_PIPED_INSTANCES = [s.strip() for s in os.environ.get(
+    "PIPED_INSTANCES",
+    "https://pipedapi.kavin.rocks,https://pipedapi.adminforge.de,"
+    "https://api.piped.private.coffee,https://pipedapi.r4fo.com"
+).split(",") if s.strip()]
+
+
+def _yt_base_opts(client_ip: Optional[str] = None, clients: Optional[List[str]] = None):
+    yt_extractor: dict = {"player_client": clients or _CLIENT_ROTATIONS[0]}
+    if _YT_PO_TOKEN:
+        # Format expected by yt-dlp: "<client>+<token>" or just "<token>".
+        yt_extractor["po_token"] = [_YT_PO_TOKEN]
+    if _YT_VISITOR_DATA:
+        yt_extractor["visitor_data"] = [_YT_VISITOR_DATA]
     opts = {
         "quiet": True, "no_warnings": True, "skip_download": True,
-        "noplaylist": True, "socket_timeout": 15,
+        "noplaylist": True, "socket_timeout": 20,
         "user_agent": random.choice(_USER_AGENTS),
-        # CRITICAL: ios → android → web like mirta. NO mweb/tv (heavy bot detection).
-        "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
+        "extractor_args": {"youtube": yt_extractor},
+        "retries": 1, "fragment_retries": 1,
+        "geo_bypass": True,
     }
     if client_ip:
-        # Forward end-user real IP so YouTube treats it as the user's request.
         opts["http_headers"] = {
             "X-Forwarded-For": client_ip,
             "X-Real-IP": client_ip,
@@ -133,16 +167,15 @@ def _yt_base_opts(client_ip: Optional[str] = None):
     if YT_COOKIES_FILE: opts["cookiefile"] = YT_COOKIES_FILE
     return opts
 
-def _make_search_opts(client_ip: Optional[str] = None):
-    o = _yt_base_opts(client_ip)
+def _make_search_opts(client_ip: Optional[str] = None, clients: Optional[List[str]] = None):
+    o = _yt_base_opts(client_ip, clients)
     o.update({"extract_flat": True, "default_search": "ytsearch"})
     return o
 
-def _make_stream_opts(client_ip: Optional[str] = None):
-    o = _yt_base_opts(client_ip)
-    # *** THE KEY FIX ***
-    # Request AUDIO format → YouTube routes through low-bot-detection path.
-    # In response, formats[] still contains video formats, we pick from there.
+def _make_stream_opts(client_ip: Optional[str] = None, clients: Optional[List[str]] = None):
+    o = _yt_base_opts(client_ip, clients)
+    # Audio-format request → low bot-detection path. We still read the full
+    # formats[] array from the response and pick the best progressive video.
     o["format"] = "bestaudio[ext=m4a]/bestaudio/best"
     return o
 
@@ -199,80 +232,160 @@ def _pick_thumb(thumbs, vid):
     return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
 
 def _search_sync(query, limit=24, client_ip=None):
-    with yt_dlp.YoutubeDL(_make_search_opts(client_ip)) as ydl:
-        info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-    entries = info.get("entries", []) if info else []
-    out = []
-    for e in entries:
-        if not e: continue
-        vid = e.get("id") or e.get("video_id")
-        if not vid: continue
-        out.append({
-            "id": vid, "title": e.get("title") or "Untitled",
-            "channel": e.get("uploader") or e.get("channel") or "Unknown",
-            "channel_id": e.get("channel_id") or e.get("uploader_id") or "",
-            "duration": int(e.get("duration") or 0),
-            "view_count": int(e.get("view_count") or 0),
-            "thumbnail": _pick_thumb(e.get("thumbnails") or [], vid),
-            "url": f"https://www.youtube.com/watch?v={vid}",
-        })
-    return out
+    last_err: Optional[Exception] = None
+    for clients in _CLIENT_ROTATIONS:
+        try:
+            with yt_dlp.YoutubeDL(_make_search_opts(client_ip, clients)) as ydl:
+                info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            entries = info.get("entries", []) if info else []
+            out = []
+            for e in entries:
+                if not e: continue
+                vid = e.get("id") or e.get("video_id")
+                if not vid: continue
+                out.append({
+                    "id": vid, "title": e.get("title") or "Untitled",
+                    "channel": e.get("uploader") or e.get("channel") or "Unknown",
+                    "channel_id": e.get("channel_id") or e.get("uploader_id") or "",
+                    "duration": int(e.get("duration") or 0),
+                    "view_count": int(e.get("view_count") or 0),
+                    "thumbnail": _pick_thumb(e.get("thumbnails") or [], vid),
+                    "url": f"https://www.youtube.com/watch?v={vid}",
+                })
+            if out: return out
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err: logger.warning(f"search rotation exhausted: {str(last_err)[:200]}")
+    return []
 
 def _stream_sync(video_id, client_ip=None):
     """
-    KEY TRICK: We request audio format from YouTube (low bot detection),
-    but extract video URL from formats[] response array. YouTube doesn't
-    apply heavy bot detection on audio-only requests.
+    Try every player-client rotation until one returns a usable URL.
+    Each rotation is a separate yt-dlp invocation – this dramatically
+    raises the chance of bypassing the bot check on cloud IPs.
     """
     url = f"https://www.youtube.com/watch?v={video_id}"
-    with yt_dlp.YoutubeDL(_make_stream_opts(client_ip)) as ydl:
-        info = ydl.extract_info(url, download=False)
-    if not info: return None
+    last_err: Optional[Exception] = None
+    for clients in _CLIENT_ROTATIONS:
+        try:
+            with yt_dlp.YoutubeDL(_make_stream_opts(client_ip, clients)) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            last_err = e
+            continue
+        if not info: continue
 
-    is_live = bool(info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"))
-    formats = info.get("formats") or []
-    stream_url = None
+        is_live = bool(info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"))
+        formats = info.get("formats") or []
+        stream_url = None
 
-    # 1. Best progressive mp4 (audio+video combined)
-    progressive = [f for f in formats
-        if f.get("vcodec") and f["vcodec"] != "none"
-        and f.get("acodec") and f["acodec"] != "none"
-        and f.get("url")
-        and (f.get("ext") == "mp4" or "mp4" in (f.get("container") or ""))]
-    progressive.sort(key=lambda f: f.get("height") or 0, reverse=True)
-    if progressive: stream_url = progressive[0]["url"]
-
-    # 2. Any combined progressive (mkv, webm, etc.)
-    if not stream_url:
-        any_prog = [f for f in formats
+        # 1. Best progressive mp4 (audio+video combined)
+        progressive = [f for f in formats
             if f.get("vcodec") and f["vcodec"] != "none"
-            and f.get("acodec") and f["acodec"] != "none" and f.get("url")]
-        any_prog.sort(key=lambda f: f.get("height") or 0, reverse=True)
-        if any_prog: stream_url = any_prog[0]["url"]
+            and f.get("acodec") and f["acodec"] != "none"
+            and f.get("url")
+            and (f.get("ext") == "mp4" or "mp4" in (f.get("container") or ""))]
+        progressive.sort(key=lambda f: f.get("height") or 0, reverse=True)
+        if progressive: stream_url = progressive[0]["url"]
 
-    # 3. HLS (live streams)
-    if not stream_url:
-        for f in formats:
-            if "m3u8" in (f.get("protocol") or "").lower() and f.get("url"):
-                stream_url = f["url"]; break
+        # 2. Any combined progressive (mkv, webm, etc.)
+        if not stream_url:
+            any_prog = [f for f in formats
+                if f.get("vcodec") and f["vcodec"] != "none"
+                and f.get("acodec") and f["acodec"] != "none" and f.get("url")]
+            any_prog.sort(key=lambda f: f.get("height") or 0, reverse=True)
+            if any_prog: stream_url = any_prog[0]["url"]
 
-    # 4. Last resort: top-level url (this is the requested audio)
-    if not stream_url:
-        stream_url = info.get("url") or info.get("manifest_url") or info.get("hls_url")
+        # 3. HLS (live streams)
+        if not stream_url:
+            for f in formats:
+                if "m3u8" in (f.get("protocol") or "").lower() and f.get("url"):
+                    stream_url = f["url"]; break
 
-    is_hls = bool(stream_url and ".m3u8" in stream_url)
-    return {
-        "stream_url": stream_url, "is_live": is_live, "is_hls": is_hls,
-        "title": info.get("title"),
-        "channel": info.get("uploader") or info.get("channel"),
-        "channel_id": info.get("channel_id"),
-        "duration": int(info.get("duration") or 0),
-        "thumbnail": _pick_thumb(info.get("thumbnails") or [], info.get("id") or video_id),
-        "description": info.get("description") or "",
-        "view_count": int(info.get("view_count") or 0),
-        "like_count": int(info.get("like_count") or 0),
-        "upload_date": info.get("upload_date") or "",
-    }
+        # 4. Last resort: top-level url (this is the requested audio)
+        if not stream_url:
+            stream_url = info.get("url") or info.get("manifest_url") or info.get("hls_url")
+
+        if not stream_url:
+            continue  # try next rotation
+
+        is_hls = bool(stream_url and ".m3u8" in stream_url)
+        return {
+            "stream_url": stream_url, "is_live": is_live, "is_hls": is_hls,
+            "title": info.get("title"),
+            "channel": info.get("uploader") or info.get("channel"),
+            "channel_id": info.get("channel_id"),
+            "duration": int(info.get("duration") or 0),
+            "thumbnail": _pick_thumb(info.get("thumbnails") or [], info.get("id") or video_id),
+            "description": info.get("description") or "",
+            "view_count": int(info.get("view_count") or 0),
+            "like_count": int(info.get("like_count") or 0),
+            "upload_date": info.get("upload_date") or "",
+            "source": "yt-dlp",
+        }
+    if last_err: logger.warning(f"yt-dlp rotation exhausted for {video_id}: {str(last_err)[:200]}")
+    return None
+
+
+def _piped_fallback_sync(video_id: str) -> Optional[dict]:
+    """
+    When yt-dlp is fully blocked, hit a public Piped instance to get a
+    fresh stream URL. Piped does its own InnerTube extraction off our IP.
+    """
+    import urllib.request, json as _json
+    for inst in _PIPED_INSTANCES:
+        try:
+            req = urllib.request.Request(
+                f"{inst.rstrip('/')}/streams/{video_id}",
+                headers={"User-Agent": _USER_AGENTS[0], "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                if r.status != 200: continue
+                data = _json.loads(r.read().decode("utf-8", "ignore"))
+        except Exception:
+            continue
+        if not isinstance(data, dict): continue
+
+        # Prefer combined HLS (live or VOD) – it carries audio+video.
+        hls_url = data.get("hls")
+        is_live = bool(data.get("livestream"))
+        stream_url = None
+        is_hls = False
+        if hls_url:
+            stream_url = hls_url
+            is_hls = True
+        else:
+            # Pick the best videoStream that has audio (videoOnly == False).
+            vids = [v for v in (data.get("videoStreams") or [])
+                    if v.get("url") and not v.get("videoOnly")]
+            vids.sort(key=lambda v: int(v.get("height") or 0), reverse=True)
+            if vids:
+                stream_url = vids[0]["url"]
+            else:
+                # Audio + separate video are not natively playable in <video>;
+                # fall back to first available muxed candidate.
+                any_v = [v for v in (data.get("videoStreams") or []) if v.get("url")]
+                if any_v: stream_url = any_v[0]["url"]
+        if not stream_url: continue
+
+        return {
+            "stream_url": stream_url,
+            "is_live": is_live,
+            "is_hls": is_hls or bool(stream_url and ".m3u8" in stream_url),
+            "title": data.get("title"),
+            "channel": data.get("uploader"),
+            "channel_id": (data.get("uploaderUrl") or "").rsplit("/", 1)[-1] or "",
+            "duration": int(data.get("duration") or 0),
+            "thumbnail": data.get("thumbnailUrl")
+                or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            "description": data.get("description") or "",
+            "view_count": int(data.get("views") or 0),
+            "like_count": int(data.get("likes") or 0),
+            "upload_date": (data.get("uploadDate") or "").replace("-", "")[:8],
+            "source": f"piped:{inst}",
+        }
+    return None
 
 async def yt_search(query, limit=24, ttl=TTL_SEARCH, client_ip=None):
     k = f"search::{query}::{limit}"
@@ -300,9 +413,19 @@ async def resolve_stream(video_id, force=False, client_ip=None):
         if not force:
             h = await cget(k)
             if h is not None: return h
-        try: data = await _yt_call(_stream_sync, video_id, client_ip)
+        data = None
+        try:
+            data = await _yt_call(_stream_sync, video_id, client_ip)
         except Exception as e:
-            logger.warning(f"resolve {video_id} failed: {str(e)[:200]}"); data = None
+            logger.warning(f"resolve {video_id} failed: {str(e)[:200]}")
+        # Piped fallback when every yt-dlp client rotation gives up.
+        if not data or not data.get("stream_url"):
+            try:
+                data = await asyncio.to_thread(_piped_fallback_sync, video_id)
+                if data:
+                    logger.info(f"[piped] resolved {video_id} via {data.get('source')}")
+            except Exception as e:
+                logger.warning(f"piped fallback {video_id}: {str(e)[:200]}")
         if data and data.get("stream_url"): await cset(k, data, TTL_STREAM)
         return data
 
@@ -499,7 +622,14 @@ async def video_meta(video_id: str, request: Request, user=Depends(get_current_u
     h = await cget(k)
     if h: return h
     data = await resolve_stream(video_id, client_ip=_client_ip(request))
-    if not data: raise HTTPException(404, "Video not found")
+    if not data:
+        # Even meta extraction is blocked; return a stub so the UI can render
+        # the iframe player without throwing 404.
+        return {"id": video_id, "title": "YouTube video", "channel": "",
+                "channel_id": "", "duration": 0,
+                "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                "description": "", "view_count": 0, "like_count": 0,
+                "upload_date": ""}
     out = {"id": video_id, "title": data.get("title"), "channel": data.get("channel"),
            "channel_id": data.get("channel_id"), "duration": data.get("duration"),
            "thumbnail": data.get("thumbnail"), "description": data.get("description"),
@@ -512,7 +642,35 @@ async def video_meta(video_id: str, request: Request, user=Depends(get_current_u
 async def stream_meta(video_id: str, request: Request, proxy: int = 0, user=Depends(get_current_user)):
     data = await resolve_stream(video_id, client_ip=_client_ip(request))
     if not data or not data.get("stream_url"):
-        raise HTTPException(404, "Stream not found")
+        # Both yt-dlp AND Piped failed -> last-resort: tell the client to use
+        # YouTube's privacy-enhanced embed. The Service Worker / in-page
+        # ad-block layer already strips ads from that iframe, so the video
+        # still plays without ads.
+        embed_url = (
+            f"https://www.youtube-nocookie.com/embed/{video_id}"
+            "?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3"
+            "&fs=1&playsinline=1&disablekb=0"
+        )
+        # Cheap meta lookup so the title/thumb still render under the player.
+        meta = None
+        try:
+            meta = await db.play_counts.find_one({"id": video_id}, {"_id": 0})
+        except Exception:
+            meta = None
+        return {
+            "video_id": video_id,
+            "title": (meta or {}).get("title") or "YouTube video",
+            "channel": (meta or {}).get("channel") or "",
+            "channel_id": "",
+            "duration": (meta or {}).get("duration") or 0,
+            "thumbnail": (meta or {}).get("thumbnail")
+                or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            "description": "",
+            "view_count": (meta or {}).get("view_count") or 0,
+            "stream_url": "",
+            "is_live": False, "is_hls": False, "direct": False,
+            "embed_url": embed_url, "is_embed": True,
+        }
     is_hls = bool(data.get("is_hls")); is_live = bool(data.get("is_live"))
     if proxy and not is_hls:
         base = str(request.base_url).rstrip("/")
@@ -531,7 +689,8 @@ async def stream_meta(video_id: str, request: Request, proxy: int = 0, user=Depe
             "thumbnail": data.get("thumbnail"), "description": data.get("description"),
             "view_count": data.get("view_count"), "stream_url": out_url,
             "is_live": is_live, "is_hls": is_hls,
-            "direct": (not bool(proxy)) or is_hls}
+            "direct": (not bool(proxy)) or is_hls,
+            "is_embed": False}
 
 # ==================== Proxy stream ====================
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=15.0)
@@ -831,6 +990,13 @@ async def _get_valid_yt_access_token(user_id: str, client_ip: Optional[str] = No
 
 
 async def _yt_api_get(user_id: str, path: str, params: dict, client_ip: Optional[str] = None) -> Optional[dict]:
+    """
+    Returns:
+      - dict on success
+      - {"__error__": "...", "__status__": int} on a non-fatal API error
+        (e.g. Data API not enabled in the user's GCP project)
+      - None when the user has no valid YouTube link at all.
+    """
     token = await _get_valid_yt_access_token(user_id, client_ip)
     if not token: return None
     headers = _oauth_headers(client_ip)
@@ -848,12 +1014,43 @@ async def _yt_api_get(user_id: str, path: str, params: dict, client_ip: Optional
             async with httpx.AsyncClient(timeout=15.0) as cx:
                 r = await cx.get(url, headers=headers, params=params)
         if r.status_code != 200:
-            logger.warning(f"[yt-api] {path} -> {r.status_code}: {r.text[:200]}")
-            return None
+            text = r.text or ""
+            logger.warning(f"[yt-api] {path} -> {r.status_code}: {text[:200]}")
+            reason = ""
+            try:
+                j = r.json() or {}
+                err = (j.get("error") or {})
+                reason = (err.get("message") or "").lower()
+            except Exception:
+                pass
+            if r.status_code == 403 and (
+                "has not been used" in reason
+                or "is disabled" in reason
+                or "accessnotconfigured" in reason.replace(" ", "")
+            ):
+                return {"__error__": "yt_data_api_disabled", "__status__": 503,
+                        "__detail__": "YouTube Data API v3 is not enabled in your Google Cloud project."}
+            if r.status_code == 403 and ("quota" in reason or "ratelimit" in reason):
+                return {"__error__": "yt_data_api_quota", "__status__": 503,
+                        "__detail__": "YouTube Data API quota exceeded."}
+            if r.status_code in (401, 403):
+                return None
+            return {"__error__": "yt_data_api_error", "__status__": 502,
+                    "__detail__": f"YouTube API responded {r.status_code}"}
         return r.json()
     except Exception as e:
         logger.warning(f"[yt-api] {path} exception: {e}")
         return None
+
+
+def _raise_for_yt_api(data) -> dict:
+    """Translate _yt_api_get error sentinels into HTTPException."""
+    if data is None:
+        raise HTTPException(401, "YouTube not connected")
+    if isinstance(data, dict) and data.get("__error__"):
+        raise HTTPException(int(data.get("__status__") or 502),
+                            data.get("__detail__") or "YouTube API error")
+    return data
 
 
 def _yt_thumb(snippet: dict, vid: str = "") -> str:
@@ -1031,7 +1228,7 @@ async def yt_me_channel(request: Request, user=Depends(get_current_user)):
     ip = _client_ip(request)
     data = await _yt_api_get(user["id"], "channels",
                              {"part": "snippet,statistics,contentDetails", "mine": "true"}, ip)
-    if not data: raise HTTPException(401, "YouTube not connected")
+    data = _raise_for_yt_api(data)
     items = data.get("items") or []
     if not items: return {"channel": None}
     it = items[0]
@@ -1057,7 +1254,7 @@ async def yt_me_subscriptions(request: Request, max_results: int = 30, user=Depe
     data = await _yt_api_get(user["id"], "subscriptions",
                              {"part": "snippet", "mine": "true", "maxResults": max(1, min(max_results, 50)),
                               "order": "alphabetical"}, ip)
-    if not data: raise HTTPException(401, "YouTube not connected")
+    data = _raise_for_yt_api(data)
     out = []
     for it in data.get("items") or []:
         sn = it.get("snippet") or {}
@@ -1099,7 +1296,8 @@ async def _enrich_videos_with_stats(user_id: str, videos: list, ip: Optional[str
     ids = [v["id"] for v in videos][:50]
     data = await _yt_api_get(user_id, "videos",
                              {"part": "contentDetails,statistics", "id": ",".join(ids)}, ip)
-    if not data: return videos
+    if not data or (isinstance(data, dict) and data.get("__error__")):
+        return videos
     by_id = {it["id"]: it for it in (data.get("items") or [])}
     for v in videos:
         it = by_id.get(v["id"])
@@ -1119,8 +1317,7 @@ async def yt_me_liked(request: Request, max_results: int = 30, user=Depends(get_
                              {"part": "snippet,contentDetails",
                               "playlistId": "LL",
                               "maxResults": max(1, min(max_results, 50))}, ip)
-    if not data:
-        raise HTTPException(401, "YouTube not connected")
+    data = _raise_for_yt_api(data)
     videos = _videos_from_playlist_items(data.get("items") or [])
     videos = await _enrich_videos_with_stats(user["id"], videos, ip)
     return {"videos": videos, "count": len(videos)}
@@ -1137,8 +1334,7 @@ async def yt_me_recent(request: Request, max_results: int = 30, user=Depends(get
     subs = await _yt_api_get(user["id"], "subscriptions",
                              {"part": "snippet", "mine": "true",
                               "maxResults": 30, "order": "unread"}, ip)
-    if not subs:
-        raise HTTPException(401, "YouTube not connected")
+    subs = _raise_for_yt_api(subs)
     chan_ids = []
     for it in (subs.get("items") or []):
         rid = ((it.get("snippet") or {}).get("resourceId") or {})
@@ -1149,7 +1345,7 @@ async def yt_me_recent(request: Request, max_results: int = 30, user=Depends(get
     async def _fetch_uploads(cid: str):
         ch = await _yt_api_get(user["id"], "channels",
                                {"part": "contentDetails", "id": cid}, ip)
-        if not ch: return []
+        if not ch or (isinstance(ch, dict) and ch.get("__error__")): return []
         items = ch.get("items") or []
         if not items: return []
         upl = ((items[0].get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
@@ -1157,7 +1353,7 @@ async def yt_me_recent(request: Request, max_results: int = 30, user=Depends(get
         pl = await _yt_api_get(user["id"], "playlistItems",
                                {"part": "snippet,contentDetails", "playlistId": upl,
                                 "maxResults": 5}, ip)
-        if not pl: return []
+        if not pl or (isinstance(pl, dict) and pl.get("__error__")): return []
         return _videos_from_playlist_items(pl.get("items") or [])
 
     results = await asyncio.gather(*[_fetch_uploads(c) for c in chan_ids], return_exceptions=True)
