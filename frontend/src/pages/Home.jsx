@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Youtube } from "lucide-react";
 import { api } from "../lib/api";
+import { useYouTube } from "../lib/youtube";
 import VideoCard, { VideoCardSkeleton } from "../components/VideoCard";
 
 const CHIP_LABELS = {
@@ -12,6 +14,9 @@ export default function Home() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [keywords, setKeywords] = useState([]);
+  const [ytRecent, setYtRecent] = useState([]);
+  const [ytLiked, setYtLiked] = useState([]);
+  const yt = useYouTube();
   const nav = useNavigate();
 
   useEffect(() => {
@@ -32,6 +37,27 @@ export default function Home() {
     })();
     return () => { alive = false; };
   }, []);
+
+  // When YouTube is connected, pull the user's personalised feeds.
+  useEffect(() => {
+    let alive = true;
+    if (!yt.connected) {
+      setYtRecent([]); setYtLiked([]);
+      return;
+    }
+    (async () => {
+      try {
+        const [recent, liked] = await Promise.all([
+          api.get("/youtube/me/recent", { params: { max_results: 24 } }).then(r => r.data?.videos || []).catch(() => []),
+          api.get("/youtube/me/liked", { params: { max_results: 12 } }).then(r => r.data?.videos || []).catch(() => []),
+        ]);
+        if (!alive) return;
+        setYtRecent(recent);
+        setYtLiked(liked);
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, [yt.connected]);
 
   const sections = data?.sections || {};
   const cw = data?.continue_watching || [];
@@ -65,6 +91,17 @@ export default function Home() {
         }))} />
       )}
 
+      {/* YouTube account sections (only when connected) */}
+      {yt.connected && ytRecent.length > 0 && (
+        <Section
+          title={`From your subscriptions${yt.google?.name ? ` — ${yt.google.name}` : ""}`}
+          icon={Youtube} items={ytRecent} testid="yt-section-recent"
+        />
+      )}
+      {yt.connected && ytLiked.length > 0 && (
+        <Section title="Your liked videos" icon={Youtube} items={ytLiked} testid="yt-section-liked" />
+      )}
+
       {loading ? (
         <Grid skeleton />
       ) : (
@@ -78,10 +115,13 @@ export default function Home() {
   );
 }
 
-function Section({ title, items }) {
+function Section({ title, items, icon: Icon, testid }) {
   return (
-    <section className="mt-6 ryh-fade-in">
-      <h2 className="text-lg font-semibold text-white mb-3" data-testid={`section-${title}`}>{title}</h2>
+    <section className="mt-6 ryh-fade-in" data-testid={testid}>
+      <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2" data-testid={`section-${title}`}>
+        {Icon ? <Icon className="w-5 h-5 text-red-500" /> : null}
+        {title}
+      </h2>
       <Grid items={items} />
     </section>
   );
