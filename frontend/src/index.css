@@ -198,6 +198,13 @@ input:focus, button:focus { outline: none; }
 body.ryh-lock { overflow: hidden; touch-action: none; }
 
 /* ==========================================================
+   Global PlayerHost styles (mini-player + sticky player)
+   ========================================================== */
+.ryh-player-host { user-select: none; touch-action: none; }
+.ryh-player-host iframe { background: #000; }
+.ryh-player-slot { aspect-ratio: 16 / 9; width: 100%; background: #000; }
+
+/* ==========================================================
    YouTube embed brand-cover overlays
    The IFrame Player API doesn't let us hide the YouTube logo
    nor the "Watch on YouTube" / channel-watermark links via
