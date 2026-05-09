@@ -1,10 +1,24 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
-import { api } from "../lib/api";
+import axios from "axios";
 
 /**
  * Handles the redirect back from Google after the user grants consent.
+ *
+ * IMPORTANT: This route is PUBLIC (not wrapped in <ProtectedBare>).
+ * Reason: when returning from an external OAuth redirect, the AuthProvider
+ * is still running its initial /auth/me verification. If we sit behind a
+ * guard, users get bounced to /login the moment that verification has
+ * even a brief hiccup (slow network, transient 401, etc.) — exactly the
+ * "logs in fine then sends me back to the login page" bug we are fixing.
+ *
+ * To stay self-sufficient, this component:
+ *   1. Reads the bearer token directly from localStorage (NOT from React
+ *      context) so it doesn't depend on AuthProvider being "ready".
+ *   2. Talks to the API with its own axios instance, so the global
+ *      response interceptor (which clears the session on any 401) cannot
+ *      log the user out as a side-effect of a YouTube-only error.
  *
  * Two flows are supported, depending on where GOOGLE_REDIRECT_URI points:
  *
@@ -31,11 +45,31 @@ export default function YouTubeCallback() {
     const yt = params.get("yt");           // server-side flow flag (ok / err)
     const ytMsg = params.get("msg");
 
+    // Snapshot the auth tokens from localStorage so we don't depend on
+    // React context which may not be ready immediately after redirect.
+    const lsToken = (() => {
+      try { return localStorage.getItem("ryh_token"); } catch { return null; }
+    })();
+    const lsDeviceId = (() => {
+      try { return localStorage.getItem("ryh_device_id"); } catch { return null; }
+    })();
+    const lsUser = (() => {
+      try { return JSON.parse(localStorage.getItem("ryh_user") || "null"); }
+      catch { return null; }
+    })();
+
     const back = () => {
       let to = "/";
       try { to = localStorage.getItem("ryh_yt_return") || "/"; } catch {}
       try { localStorage.removeItem("ryh_yt_return"); } catch {}
-      nav(to, { replace: true });
+      // If the user genuinely has no session at all, only THEN send them
+      // to /login. Otherwise stay inside the app — this is the core of
+      // the post-OAuth-redirects-to-login fix.
+      if (!lsToken || !lsUser) {
+        nav("/login", { replace: true });
+      } else {
+        nav(to, { replace: true });
+      }
     };
 
     // ---- Flow B: backend already finished the exchange ----
@@ -65,7 +99,18 @@ export default function YouTubeCallback() {
 
     (async () => {
       try {
-        await api.post("/youtube/auth/exchange", { code, state });
+        // Use a LOCAL axios instance so the global 401 interceptor in
+        // ../lib/api.js can't accidentally wipe the user's session if
+        // the YouTube exchange itself returns 401 for any reason.
+        const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
+        const headers = {};
+        if (lsToken) headers["Authorization"] = `Bearer ${lsToken}`;
+        if (lsDeviceId) headers["X-Device-Id"] = lsDeviceId;
+        await axios.post(
+          `${BACKEND_URL}/api/youtube/auth/exchange`,
+          { code, state },
+          { headers, timeout: 20000 }
+        );
         try { localStorage.removeItem("ryh_yt_status"); } catch {}
         setPhase("done"); setMsg("YouTube connected. Redirecting…");
         setTimeout(back, 700);
