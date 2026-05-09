@@ -159,14 +159,21 @@ input:focus, button:focus { outline: none; }
   padding-top: var(--safe-top);
 }
 
-/* On very small screens, profile dropdown should not overflow */
+/* Profile dropdown — pinned to viewport, safe-area aware (iOS/Android) */
+.ryh-profile-menu {
+  top: calc(var(--safe-top, 0px) + 3.5rem);
+  right: calc(var(--safe-right, 0px) + 0.5rem);
+  width: 280px;
+  max-width: calc(100vw - 1rem - var(--safe-right, 0px) - var(--safe-left, 0px));
+  max-height: calc(100vh - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 4.5rem);
+  overflow-y: auto;
+}
+
+/* On very small screens, profile dropdown should fill available width */
 @media (max-width: 380px) {
   .ryh-profile-menu {
-    right: 0 !important;
-    left: 0 !important;
+    width: calc(100vw - 1rem - var(--safe-right, 0px) - var(--safe-left, 0px)) !important;
     min-width: 0 !important;
-    width: calc(100vw - 1rem) !important;
-    margin: 0 0.5rem;
   }
 }
 
