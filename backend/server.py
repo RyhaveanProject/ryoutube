@@ -40,6 +40,38 @@ app = FastAPI(title="Ryhavean YouTube")
 api = APIRouter(prefix="/api")
 bearer = HTTPBearer(auto_error=False)
 
+
+# ==================== Keep-alive / health-check ====================
+# Used by the frontend heartbeat (lib/keepAlive.js) and any external uptime
+# monitor (UptimeRobot / cron-job.org) to prevent free-tier hosting providers
+# (Render, Fly, etc.) from putting the dyno to sleep after 15 min of idle.
+@app.get("/api/ping")
+@app.head("/api/ping")
+async def ping():
+    return {
+        "ok": True,
+        "service": "ryhavean-youtube",
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/download/changes.zip")
+async def download_changes_zip():
+    """Serves the bundle of all files changed in the latest fix pass.
+    Generated at /app/changes.zip — see scripts/build-changes-zip.sh."""
+    from fastapi.responses import FileResponse
+    import os
+    p = "/app/changes.zip"
+    if not os.path.exists(p):
+        raise HTTPException(404, "changes.zip not built yet")
+    return FileResponse(p, media_type="application/zip", filename="ryoutube-changes.zip")
+
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ryhavean-yt")
 
@@ -442,7 +474,15 @@ def dectok(t): return jwt.decode(t, JWT_SECRET, algorithms=[JWT_ALGO])
 
 async def get_current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
                            x_device_id: Optional[str] = Header(None)):
-    if not creds: raise HTTPException(401, "Not authenticated")
+    # Per product decision: app is browsable as a GUEST without login.
+    # Endpoints that need a real account (history, likes, watch-later,
+    # admin) call require_real_user / require_admin which keep the old
+    # behaviour. All public endpoints now accept anonymous users.
+    if not creds:
+        return {
+            "id": "guest", "email": "guest@ryhavean.local",
+            "role": "guest", "active": True, "device_id": x_device_id or "guest",
+        }
     try: payload = dectok(creds.credentials)
     except jwt.ExpiredSignatureError: raise HTTPException(401, "Token expired")
     except Exception: raise HTTPException(401, "Invalid token")
@@ -453,6 +493,12 @@ async def get_current_user(creds: Optional[HTTPAuthorizationCredentials] = Depen
         bound = user.get("device_id"); td = payload.get("did")
         if bound and td and bound != td: raise HTTPException(409, "DEVICE_MISMATCH")
         if x_device_id and bound and x_device_id != bound: raise HTTPException(409, "DEVICE_MISMATCH")
+    return user
+
+
+async def require_real_user(user=Depends(get_current_user)):
+    if user.get("role") == "guest":
+        raise HTTPException(401, "Login required")
     return user
 
 async def require_admin(user=Depends(get_current_user)):
