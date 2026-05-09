@@ -5,8 +5,16 @@ import { api } from "../lib/api";
 
 /**
  * Handles the redirect back from Google after the user grants consent.
- * URL: /youtube/callback?code=...&state=...
- * Sends `code` to the backend, then bounces back to the page the user came from.
+ *
+ * Two flows are supported, depending on where GOOGLE_REDIRECT_URI points:
+ *
+ *   A) Redirect URI -> FRONTEND/youtube/callback?code=...&state=...
+ *      The frontend calls POST /api/youtube/auth/exchange with the code.
+ *
+ *   B) Redirect URI -> BACKEND/youtube/callback?code=...&state=...
+ *      The backend exchanges the code server-side, then redirects the
+ *      browser back here with ?yt=ok or ?yt=err&msg=... so we can refresh
+ *      the YT status and bounce the user back to where they came from.
  */
 export default function YouTubeCallback() {
   const nav = useNavigate();
@@ -20,6 +28,8 @@ export default function YouTubeCallback() {
     const code = params.get("code");
     const state = params.get("state");
     const err = params.get("error");
+    const yt = params.get("yt");           // server-side flow flag (ok / err)
+    const ytMsg = params.get("msg");
 
     const back = () => {
       let to = "/";
@@ -28,6 +38,20 @@ export default function YouTubeCallback() {
       nav(to, { replace: true });
     };
 
+    // ---- Flow B: backend already finished the exchange ----
+    if (yt === "ok") {
+      try { localStorage.removeItem("ryh_yt_status"); } catch {}
+      setPhase("done"); setMsg("YouTube connected. Redirecting…");
+      setTimeout(back, 700);
+      return;
+    }
+    if (yt === "err") {
+      setPhase("error"); setMsg(ytMsg || "Could not connect to YouTube.");
+      setTimeout(back, 2400);
+      return;
+    }
+
+    // ---- Flow A: frontend exchanges the code ----
     if (err) {
       setPhase("error"); setMsg(`Google rejected the request: ${err}`);
       setTimeout(back, 2200);
