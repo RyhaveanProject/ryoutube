@@ -638,40 +638,83 @@ async def video_meta(video_id: str, request: Request, user=Depends(get_current_u
     await cset(k, out, TTL_INFO)
     return out
 
-@api.get("/stream/{video_id}")
-async def stream_meta(video_id: str, request: Request, proxy: int = 0, user=Depends(get_current_user)):
-    data = await resolve_stream(video_id, client_ip=_client_ip(request))
-    if not data or not data.get("stream_url"):
-        # Both yt-dlp AND Piped failed -> last-resort: tell the client to use
-        # YouTube's privacy-enhanced embed. The Service Worker / in-page
-        # ad-block layer already strips ads from that iframe, so the video
-        # still plays without ads.
-        embed_url = (
-            f"https://www.youtube-nocookie.com/embed/{video_id}"
-            "?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3"
-            "&fs=1&playsinline=1&disablekb=0"
-        )
-        # Cheap meta lookup so the title/thumb still render under the player.
+def _embed_url_for(video_id: str) -> str:
+    return (
+        f"https://www.youtube-nocookie.com/embed/{video_id}"
+        "?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3"
+        "&fs=1&playsinline=1&disablekb=0"
+    )
+
+async def _embed_payload(video_id: str) -> dict:
+    """Instant-load embed response (no yt-dlp call). Looks up cached meta if any."""
+    meta = None
+    try:
+        # Prefer richer cached info from previous extractions
+        meta = await cget(f"info::{video_id}")
+    except Exception:
         meta = None
+    if not meta:
         try:
             meta = await db.play_counts.find_one({"id": video_id}, {"_id": 0})
         except Exception:
             meta = None
-        return {
-            "video_id": video_id,
-            "title": (meta or {}).get("title") or "YouTube video",
-            "channel": (meta or {}).get("channel") or "",
-            "channel_id": "",
-            "duration": (meta or {}).get("duration") or 0,
-            "thumbnail": (meta or {}).get("thumbnail")
-                or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
-            "description": "",
-            "view_count": (meta or {}).get("view_count") or 0,
-            "stream_url": "",
-            "is_live": False, "is_hls": False, "direct": False,
-            "embed_url": embed_url, "is_embed": True,
-        }
+    meta = meta or {}
+    return {
+        "video_id": video_id,
+        "title": meta.get("title") or "YouTube video",
+        "channel": meta.get("channel") or "",
+        "channel_id": meta.get("channel_id") or "",
+        "duration": meta.get("duration") or 0,
+        "thumbnail": meta.get("thumbnail")
+            or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+        "description": meta.get("description") or "",
+        "view_count": meta.get("view_count") or 0,
+        "stream_url": "",
+        "is_live": False, "is_hls": False, "direct": False,
+        "embed_url": _embed_url_for(video_id), "is_embed": True,
+    }
+
+@api.get("/stream/{video_id}")
+async def stream_meta(
+    video_id: str,
+    request: Request,
+    proxy: int = 1,
+    direct: int = 0,
+    user=Depends(get_current_user),
+):
+    """
+    Default behavior (FAST + RELIABLE): return YouTube embed iframe URL
+    immediately. Direct googlevideo.com URLs returned by yt-dlp are bound
+    to the server IP / player tokens and routinely fail to play in the
+    user's browser (poster loads, video freezes). The iframe player is
+    instant, IP-agnostic, and ad-blocked client-side via the Service Worker.
+
+    Pass ?direct=1 to force a yt-dlp extraction (slower; auto-proxied).
+    """
+    # Bump play count + remember meta in the background — never block playback.
+    try:
+        await db.play_counts.update_one(
+            {"id": video_id},
+            {"$inc": {"plays": 1},
+             "$set": {"last_played": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
+    if not direct:
+        return await _embed_payload(video_id)
+
+    # Opt-in direct stream path (slower, may still fail → frontend falls back to embed).
+    data = await resolve_stream(video_id, client_ip=_client_ip(request))
+    if not data or not data.get("stream_url"):
+        return await _embed_payload(video_id)
+
     is_hls = bool(data.get("is_hls")); is_live = bool(data.get("is_live"))
+    # Force proxy unless the caller explicitly disabled it (?proxy=0).
+    # googlevideo.com URLs validate the requester IP, so streaming straight
+    # from the browser usually 403s. Proxying through the backend keeps the
+    # IP consistent with the one yt-dlp used during extraction.
     if proxy and not is_hls:
         base = str(request.base_url).rstrip("/")
         out_url = f"{base}/api/proxy-stream/{video_id}"
@@ -679,10 +722,9 @@ async def stream_meta(video_id: str, request: Request, proxy: int = 0, user=Depe
         out_url = data["stream_url"]
     try:
         await db.play_counts.update_one({"id": video_id},
-            {"$inc": {"plays": 1},
-             "$set": {"title": data.get("title") or "", "channel": data.get("channel") or "",
-                      "thumbnail": data.get("thumbnail") or "", "duration": data.get("duration") or 0,
-                      "last_played": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+            {"$set": {"title": data.get("title") or "", "channel": data.get("channel") or "",
+                      "thumbnail": data.get("thumbnail") or "", "duration": data.get("duration") or 0}},
+            upsert=True)
     except Exception: pass
     return {"video_id": video_id, "title": data.get("title"), "channel": data.get("channel"),
             "channel_id": data.get("channel_id"), "duration": data.get("duration"),
@@ -690,6 +732,9 @@ async def stream_meta(video_id: str, request: Request, proxy: int = 0, user=Depe
             "view_count": data.get("view_count"), "stream_url": out_url,
             "is_live": is_live, "is_hls": is_hls,
             "direct": (not bool(proxy)) or is_hls,
+            # Always include embed_url so the frontend can fall back instantly
+            # if the direct stream errors in the browser.
+            "embed_url": _embed_url_for(video_id),
             "is_embed": False}
 
 # ==================== Proxy stream ====================
