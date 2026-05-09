@@ -583,6 +583,49 @@ async def proxy_stream(video_id: str, request: Request):
     return StreamingResponse(_body(), status_code=resp.status_code, headers=ph,
                              media_type=ph.get("Content-Type", "video/mp4"))
 
+# ==================== SponsorBlock (skip in-video ads/sponsors) ====================
+SPONSORBLOCK_API = "https://sponsor.ajay.app/api/skipSegments"
+SPONSOR_CATS = ["sponsor", "selfpromo", "interaction", "intro", "outro",
+                "preview", "music_offtopic", "filler"]
+
+@api.get("/skip-segments/{video_id}")
+async def skip_segments(video_id: str, user=Depends(get_current_user)):
+    """
+    Returns timestamp ranges (in seconds) the player should auto-skip so the
+    video plays completely ad-free (including in-video sponsor reads).
+    Powered by the public SponsorBlock database.
+    """
+    k = f"sb::{video_id}"
+    cached = await cget(k)
+    if cached is not None:
+        return {"video_id": video_id, "segments": cached}
+    params = [("videoID", video_id)] + [("category", c) for c in SPONSOR_CATS]
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as cx:
+            r = await cx.get(SPONSORBLOCK_API, params=params,
+                             headers={"User-Agent": _USER_AGENTS[0]})
+        if r.status_code == 404:
+            await cset(k, [], TTL_INFO)
+            return {"video_id": video_id, "segments": []}
+        if r.status_code != 200:
+            return {"video_id": video_id, "segments": []}
+        items = r.json() or []
+        segs = []
+        for it in items:
+            seg = it.get("segment") or []
+            if len(seg) == 2:
+                segs.append({
+                    "start": float(seg[0]),
+                    "end": float(seg[1]),
+                    "category": it.get("category", "sponsor"),
+                })
+        segs.sort(key=lambda s: s["start"])
+        await cset(k, segs, TTL_INFO)
+        return {"video_id": video_id, "segments": segs}
+    except Exception:
+        return {"video_id": video_id, "segments": []}
+
+
 # ==================== Recommendations ====================
 @api.get("/recommendations")
 async def recommendations(video_id: Optional[str] = None, request: Request = None,
