@@ -1,6 +1,0 @@
-# Cloudflare Pages / Workers Static Assets — SPA fallback
-# Bütün tanınmayan marşrutları index.html-ə yönəldir ki,
-# React Router (/youtube/callback, /login, /watch/:id və s.) işləsin.
-# Bunsuz Cloudflare /youtube/callback üçün boş 404 qaytarır
-# və brauzer onu 0kb fayl kimi yükləyir.
-/*    /index.html    200
