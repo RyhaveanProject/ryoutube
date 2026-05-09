@@ -202,28 +202,14 @@ body.ryh-lock { overflow: hidden; touch-action: none; }
 
 /* ==========================================================
    YouTube embed brand-cover overlays
-   We hide:
-     - Top-left: "Watch on YouTube" link + title pill
-     - Bottom-right: YouTube watermark / logo + share/watch-later cluster
+   No longer used as visible black gradients (those caused the
+   "black stains over the title and the YT logo" complaint).
+   The iframe `sandbox` attribute now blocks all external nav
+   from the YouTube embed, so we no longer need a visible cover.
+   The selectors are kept (transparent) for backwards compat.
    ========================================================== */
-.ryh-yt-cover {
-  position: absolute;
-  background: #000;
-  z-index: 4;
-  pointer-events: auto;
-}
-.ryh-yt-cover-tl {
-  top: 0; left: 0;
-  width: 70%; height: 56px;
-  background: linear-gradient(to bottom, rgba(0,0,0,.85) 30%, rgba(0,0,0,0));
-}
-/* Bottom-right cover: hides the YT logo watermark + the "More videos"
-   suggestions tile that YouTube shows at end of playback. */
-.ryh-yt-cover-br {
-  right: 0; bottom: 0;
-  width: 110px; height: 38px;
-  background: linear-gradient(to top left, rgba(0,0,0,.92) 60%, rgba(0,0,0,0));
-}
+.ryh-yt-cover { position: absolute; background: transparent; pointer-events: none; }
+.ryh-yt-cover-tl, .ryh-yt-cover-br { display: none; }
 
 /* ==========================================================
    Header / search responsiveness
@@ -255,3 +241,28 @@ body.ryh-lock { overflow: hidden; touch-action: none; }
 
 /* Pull-to-refresh wrapper guard */
 [data-testid="ptr-wrap"] { overscroll-behavior-y: contain; }
+
+/* ==========================================================
+   Description collapsible (Watch page)
+   Uses grid-rows trick → smooth height animation with no JS.
+   ========================================================== */
+.ryh-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows .28s ease;
+}
+.ryh-collapse > * { overflow: hidden; min-height: 0; }
+.ryh-collapse.ryh-collapse-open { grid-template-rows: 1fr; }
+
+/* ==========================================================
+   Mini-player entrance animation (slide up + fade in)
+   Triggered every time the player shrinks from inline → mini.
+   ========================================================== */
+@keyframes ryh-mini-in {
+  0%   { transform: translateY(24px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+.ryh-mini-enter { animation: ryh-mini-in .28s ease-out both; }
+
+/* Smooth video-card press feedback */
+.ryh-card:active { transform: scale(.985); }
