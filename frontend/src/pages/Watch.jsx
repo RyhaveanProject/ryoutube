@@ -126,6 +126,7 @@ export default function Watch() {
     <div className="lg:flex lg:gap-6 lg:p-6">
       <Toaster theme="dark" richColors position="top-center" />
       <div className="flex-1 min-w-0 max-w-4xl">
+        <div className="ryh-watch-player-wrap">
         {loading || !stream ? (
           <div className="aspect-video bg-black grid place-items-center">
             <Loader2 className="w-8 h-8 animate-spin text-neutral-400" />
@@ -142,6 +143,7 @@ export default function Watch() {
             skipSegments={skipSegments}
           />
         )}
+        </div>
 
         <div className="px-3 lg:px-0 py-4">
           <h1 className="text-lg sm:text-xl font-semibold text-white leading-snug" data-testid="watch-title">
