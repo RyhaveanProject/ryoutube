@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
-import { ThumbsUp, ThumbsDown, Clock, Share2, Loader2 } from "lucide-react";
+import { ThumbsUp, ThumbsDown, Clock, Share2, Loader2, ChevronDown } from "lucide-react";
 import { api } from "../lib/api";
 import VideoCard from "../components/VideoCard";
 import { Button } from "../components/ui/button";
@@ -16,6 +16,9 @@ export default function Watch() {
   const [loading, setLoading] = useState(true);
   const [liked, setLiked] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Description is collapsed by default — every time the page loads
+  // or the user navigates to a new video. Tapping the header toggles.
+  const [descOpen, setDescOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setMeta(null);
@@ -52,9 +55,12 @@ export default function Watch() {
   }, [id]);
 
   // Always reset scroll to top when switching videos so the new
-  // player isn't off-screen and the layout is predictable.
+  // player isn't off-screen and the layout is predictable. Also
+  // collapse the description (matches real YouTube behaviour where
+  // the description is closed every time you open a video).
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "auto" });
+    setDescOpen(false);
     load();
   }, [load]);
 
@@ -182,18 +188,34 @@ export default function Watch() {
           </div>
 
           <div
-            className="mt-4 bg-neutral-900 rounded-xl p-4 text-sm text-neutral-100"
+            className="mt-4 bg-neutral-900 rounded-xl text-sm text-neutral-100 overflow-hidden ryh-fade-in"
             data-testid="watch-description"
           >
-            <div className="text-[13px] text-neutral-400 mb-2">
-              {meta?.channel ? `From ${meta.channel}` : "Description"}
-              {meta?.view_count > 0 && (
-                <span className="ml-2">{formatViews(meta.view_count)} views</span>
-              )}
+            <button
+              type="button"
+              onClick={() => setDescOpen((o) => !o)}
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-neutral-800/60 transition-colors"
+              data-testid="watch-description-toggle"
+              aria-expanded={descOpen}
+            >
+              <div className="text-[13px] text-neutral-300 truncate">
+                {meta?.channel ? `From ${meta.channel}` : "Description"}
+                {meta?.view_count > 0 && (
+                  <span className="ml-2 text-neutral-500">{formatViews(meta.view_count)} views</span>
+                )}
+              </div>
+              <ChevronDown
+                className={`w-4 h-4 text-neutral-400 shrink-0 transition-transform duration-300 ${descOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+            <div
+              className={`ryh-collapse ${descOpen ? "ryh-collapse-open" : ""}`}
+              data-testid="watch-description-body"
+            >
+              <pre className="whitespace-pre-wrap font-sans text-[13.5px] leading-relaxed text-neutral-100 px-4 pb-4 pt-1">
+                {meta?.description?.trim() || "No description provided for this video."}
+              </pre>
             </div>
-            <pre className="whitespace-pre-wrap font-sans text-[13.5px] leading-relaxed text-neutral-100">
-              {meta?.description?.trim() || "No description provided for this video."}
-            </pre>
           </div>
         </div>
       </div>
