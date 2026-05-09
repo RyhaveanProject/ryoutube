@@ -196,3 +196,43 @@ input:focus, button:focus { outline: none; }
 
 /* Prevent iOS body scroll underneath when drawer/menu open */
 body.ryh-lock { overflow: hidden; touch-action: none; }
+
+/* ==========================================================
+   YouTube embed brand-cover overlays
+   The IFrame Player API doesn't let us hide the YouTube logo
+   nor the "Watch on YouTube" / channel-watermark links via
+   parameters alone, so we layer small opaque blockers on top
+   of the iframe in the exact positions YouTube renders them.
+   ========================================================== */
+.ryh-yt-cover {
+  position: absolute;
+  background: #000;
+  z-index: 4;
+  pointer-events: auto;
+}
+/* Top-left: "Watch on YouTube" link + video title pill */
+.ryh-yt-cover-tl {
+  top: 0; left: 0;
+  width: 70%; height: 56px;
+  background: linear-gradient(to bottom, rgba(0,0,0,.85) 30%, rgba(0,0,0,0));
+}
+/* Top-right: YouTube logo + share button */
+.ryh-yt-cover-tr {
+  top: 0; right: 0;
+  width: 110px; height: 56px;
+  background: #000;
+}
+/* Bottom-right: channel watermark */
+.ryh-yt-cover-br {
+  bottom: 0; right: 0;
+  width: 56px; height: 56px;
+  background: transparent;
+}
+
+/* While player is in mini mode, host iframe should be unselectable */
+.ryh-player-host { user-select: none; }
+.ryh-player-host iframe { background: #000; }
+
+/* Inline player slot fills available width with 16:9 ratio */
+.ryh-player-slot { aspect-ratio: 16 / 9; width: 100%; background: #000; }
+
