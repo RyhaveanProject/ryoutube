@@ -54,6 +54,13 @@ export function AuthProvider({ children }) {
     });
     localStorage.setItem(TOKEN_KEY, data.token);
     localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+    // Hər yeni login üçün köhnə YouTube vəziyyətini təmizləyirik:
+    // bu sayədə yeni admin tərəfindən yaradılan parolla daxil olduqda
+    // əvvəlki istifadəçinin YouTube adı/profili görünmür və yeni
+    // istifadəçidən YouTube ilə təkrar login tələb olunur.
+    try { localStorage.removeItem("ryh_yt_status"); } catch {}
+    try { localStorage.removeItem("ryh_yt_return"); } catch {}
+    try { window.dispatchEvent(new Event("ryh:yt-refresh")); } catch {}
     setToken(data.token);
     setUser(data.user);
     setDeviceBlocked(false);
@@ -64,6 +71,9 @@ export function AuthProvider({ children }) {
     try { await api.post("/auth/logout"); } catch {}
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
+    try { localStorage.removeItem("ryh_yt_status"); } catch {}
+    try { localStorage.removeItem("ryh_yt_return"); } catch {}
+    try { window.dispatchEvent(new Event("ryh:yt-refresh")); } catch {}
     setToken(null); setUser(null);
   };
 
