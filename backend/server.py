@@ -2,7 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request, 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import StreamingResponse
+from starlette.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
@@ -1224,6 +1224,166 @@ async def _ensure_indexes():
         await db.youtube_oauth_states.create_index("state", unique=True)
         await db.youtube_oauth_states.create_index("expires_at")
     except Exception as e: logger.warning(f"index: {e}")
+
+# ====================================================================
+# Server-side OAuth callback (when GOOGLE_REDIRECT_URI points to backend)
+# ====================================================================
+def _frontend_base_url() -> str:
+    """Best-effort discovery of the frontend origin to redirect users back."""
+    fu = (os.environ.get("FRONTEND_URL") or "").strip().rstrip("/")
+    if fu:
+        return fu
+    raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if raw and raw != "*":
+        first = raw.split(",")[0].strip().rstrip("/")
+        if first.startswith("http"):
+            return first
+    return ""
+
+
+def _oauth_done_html(success: bool, message: str, frontend_url: str) -> HTMLResponse:
+    qs = urlencode({"yt": "ok" if success else "err",
+                    **({"msg": message} if message and not success else {})})
+    target = f"{frontend_url}/youtube/callback?{qs}" if frontend_url else f"/?{qs}"
+    title = "YouTube connected" if success else "YouTube connection failed"
+    color = "#10b981" if success else "#f59e0b"
+    safe_msg = (message or ("Redirecting back to the app…" if success else "Please try again."))
+    safe_msg = safe_msg.replace("<", "&lt;").replace(">", "&gt;")
+    html = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="refresh" content="1;url={target}">
+<title>{title}</title>
+<style>
+ html,body{{margin:0;height:100%;background:#000;color:#fff;
+   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}}
+ .wrap{{min-height:100%;display:grid;place-items:center;padding:1.5rem;text-align:center}}
+ .card{{background:rgba(24,24,24,.7);backdrop-filter:blur(14px);
+   border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:1.75rem 1.5rem;max-width:420px;width:100%}}
+ h1{{font-size:1.15rem;margin:.25rem 0 .5rem;color:{color}}}
+ p{{color:#bdbdbd;font-size:.9rem;margin:.25rem 0}}
+ a{{color:#60a5fa;text-decoration:none;font-size:.9rem}}
+ .dot{{width:10px;height:10px;border-radius:50%;background:{color};
+   display:inline-block;margin-right:.4rem;vertical-align:middle}}
+</style></head>
+<body><div class="wrap"><div class="card">
+<h1><span class="dot"></span>{title}</h1>
+<p>{safe_msg}</p>
+<p><a href="{target}">Continue&nbsp;&rarr;</a></p>
+</div></div>
+<script>setTimeout(function(){{location.replace({target!r})}},600);</script>
+</body></html>"""
+    return HTMLResponse(html, status_code=200)
+
+
+@app.get("/youtube/callback")
+async def youtube_oauth_callback_redirect(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    """
+    Server-side OAuth callback handler.
+
+    Google redirects the user here with `?code=...&state=...` when the
+    configured GOOGLE_REDIRECT_URI points to this backend host. We:
+      1) look up the originating user via the OAuth `state`
+      2) exchange the code for tokens
+      3) persist tokens against that user
+      4) redirect the browser back to the frontend's /youtube/callback page
+    """
+    frontend_url = _frontend_base_url()
+
+    if error:
+        return _oauth_done_html(False, f"Google error: {error}", frontend_url)
+    if not code or not state:
+        return _oauth_done_html(False, "Missing code or state.", frontend_url)
+    if not _oauth_configured():
+        return _oauth_done_html(False, "OAuth is not configured on the server.", frontend_url)
+
+    st = await db.youtube_oauth_states.find_one({"state": state})
+    if not st or st.get("expires_at", 0) < time.time():
+        return _oauth_done_html(False, "Invalid or expired state.", frontend_url)
+    user_id = st.get("user_id")
+    await db.youtube_oauth_states.delete_one({"state": state})
+    if not user_id:
+        return _oauth_done_html(False, "Unknown user for this OAuth state.", frontend_url)
+
+    ip = _client_ip(request)
+    payload = {
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as cx:
+            r = await cx.post(GOOGLE_TOKEN_URL, data=payload, headers=_oauth_headers(ip))
+    except Exception as e:
+        logger.warning(f"[yt-oauth-cb] token POST failed: {e}")
+        return _oauth_done_html(False, "Could not reach Google token endpoint.", frontend_url)
+    if r.status_code != 200:
+        logger.warning(f"[yt-oauth-cb] exchange {r.status_code}: {r.text[:300]}")
+        return _oauth_done_html(False, "Authorization rejected by Google.", frontend_url)
+    tok = r.json()
+
+    profile = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as cx:
+            pr = await cx.get(GOOGLE_USERINFO_URL,
+                              headers={**_oauth_headers(ip),
+                                       "Authorization": f"Bearer {tok.get('access_token','')}"})
+        if pr.status_code == 200:
+            profile = pr.json()
+    except Exception:
+        pass
+
+    yt_channel = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as cx:
+            cr = await cx.get(f"{YT_API_BASE}/channels",
+                              params={"part": "snippet,statistics", "mine": "true"},
+                              headers={**_oauth_headers(ip),
+                                       "Authorization": f"Bearer {tok.get('access_token','')}"})
+        if cr.status_code == 200:
+            items = (cr.json() or {}).get("items") or []
+            if items:
+                it = items[0]
+                yt_channel = {
+                    "channel_id": it.get("id"),
+                    "title": (it.get("snippet") or {}).get("title"),
+                    "thumbnail": _yt_thumb(it.get("snippet")),
+                    "subscriber_count": int((it.get("statistics") or {}).get("subscriberCount") or 0),
+                }
+    except Exception:
+        pass
+
+    expires_at = time.time() + int(tok.get("expires_in", 3600)) - 60
+    doc = {
+        "user_id": user_id,
+        "access_token": tok.get("access_token"),
+        "scope": tok.get("scope", GOOGLE_OAUTH_SCOPES),
+        "token_type": tok.get("token_type", "Bearer"),
+        "expires_at": expires_at,
+        "google_email": profile.get("email"),
+        "google_name": profile.get("name"),
+        "google_picture": profile.get("picture"),
+        "google_sub": profile.get("sub"),
+        "yt_channel": yt_channel,
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if tok.get("refresh_token"):
+        doc["refresh_token"] = tok["refresh_token"]
+    existing = await _yt_token_doc(user_id)
+    if existing and not doc.get("refresh_token") and existing.get("refresh_token"):
+        doc["refresh_token"] = existing["refresh_token"]
+    await db.youtube_tokens.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
+
+    return _oauth_done_html(True, "Your YouTube account has been linked.", frontend_url)
+
 
 app.include_router(api)
 app.add_middleware(CORSMiddleware,
