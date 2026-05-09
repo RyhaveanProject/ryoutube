@@ -191,7 +191,7 @@ export default function Layout({ children }) {
               data-testid="header-profile-btn"
             >
               {yt.connected && yt.google?.picture ? (
-                // eslint-disable-next-line jsx-a11y/alt-text
+           
                 <img src={yt.google.picture} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               ) : (
                 (user?.email || "U").charAt(0).toUpperCase()
@@ -214,7 +214,7 @@ export default function Layout({ children }) {
                   <>
                     <div className="px-3 py-2 flex items-center gap-2.5">
                       {yt.google?.picture ? (
-                        // eslint-disable-next-line jsx-a11y/alt-text
+                       
                         <img src={yt.google.picture} className="w-7 h-7 rounded-full" referrerPolicy="no-referrer" />
                       ) : (
                         <Youtube className="w-5 h-5 text-red-500" />
