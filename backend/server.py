@@ -646,8 +646,8 @@ async def video_meta(video_id: str, request: Request, user=Depends(get_current_u
 def _embed_url_for(video_id: str) -> str:
     return (
         f"https://www.youtube-nocookie.com/embed/{video_id}"
-        "?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3"
-        "&fs=1&playsinline=1&disablekb=0"
+        "?autoplay=1&mute=1&rel=0&modestbranding=1&iv_load_policy=3"
+        "&fs=1&playsinline=1&disablekb=0&controls=1"
     )
 
 async def _embed_payload(video_id: str) -> dict:
