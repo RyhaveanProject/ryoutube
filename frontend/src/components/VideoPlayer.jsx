@@ -381,6 +381,7 @@ export default function VideoPlayer({
           referrerPolicy="no-referrer-when-downgrade"
           loading="eager"
           frameBorder="0"
+          sandbox="allow-scripts allow-same-origin allow-presentation"
         />
       </div>
     );
