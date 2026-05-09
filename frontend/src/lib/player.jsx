@@ -10,23 +10,22 @@ import { X, Maximize2, Play, Pause } from "lucide-react";
  *
  * One iframe is mounted ONCE at the App root. It is positioned with
  * `position: fixed` and continuously aligned to a "slot" element on the
- * Watch page. Drag the player downward (or navigate away) and it
- * collapses into a draggable mini-player anchored above the bottom nav,
- * exactly like YouTube's mobile experience. Audio is never interrupted.
+ * Watch page. When minimized it collapses into a fixed mini-player
+ * anchored above the bottom nav (NOT swipeable horizontally — matches
+ * real YouTube mobile behaviour).
  *
- *  - Internal nav only: the iframe lives inside our app, so no taps
- *    inside the recommendations rail can ever leak the user to
- *    youtube.com.
- *  - YouTube branding watermarks (top-left "Watch on YouTube" pill,
- *    bottom-right "watch later / share" cluster, and the YT logo
- *    over-cover) are hidden via the .ryh-yt-cover-* overlays in
- *    index.css.
+ *  - Internal nav only: the iframe is sandboxed (`allow-scripts
+ *    allow-same-origin allow-presentation`) which strips popup +
+ *    top-navigation capabilities. Clicks on YouTube's "Watch on
+ *    YouTube" pill or the YT logo simply do nothing — no navigation
+ *    leaks to youtube.com.
+ *  - Because of the sandbox the visible black brand-cover gradients
+ *    are no longer needed, so they were removed (fixes the "black
+ *    stains over the title and the YT logo" complaint).
+ *  - Position updates are diff-gated to eliminate visible jitter when
+ *    the user scrolls the recommendations rail with a video open.
  *  - Autoplay forced via mute=1 + autoplay=1 + postMessage("playVideo");
- *    we unmute right after playback actually starts so users never see
- *    YouTube's "click to play" poster.
- *  - Mini-player is draggable on touch/desktop. Releasing the drag with
- *    > 60% horizontal velocity dismisses the player; releasing on the
- *    bottom edge restores expanded mode.
+ *    we unmute right after playback actually starts.
  */
 
 const PlayerCtx = createContext(null);
@@ -110,20 +109,17 @@ function PlayerHost() {
   const loc = useLocation();
   const hostRef = useRef(null);
   const iframeRef = useRef(null);
-  const dragRef = useRef({ startY: 0, startX: 0, dragging: false, dy: 0, dx: 0, mode: null });
-  const miniDragRef = useRef({ x: null, y: null });
+  const dragRef = useRef({ startY: 0, dragging: false, dy: 0 });
+  // Cached last-applied geometry, used to skip redundant style writes
+  // (eliminates visible jitter when scrolling the recommendations rail).
+  const lastGeomRef = useRef({ left: -1, top: -1, width: -1, height: -1, radius: "", shadow: "", opacity: "" });
   const [dragOffset, setDragOffset] = useState(0);
-  const [miniPos, setMiniPos] = useState(null); // {x, y} for mobile only
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" ? window.innerWidth < 768 : false
   );
 
   useEffect(() => {
-    const onResize = () => {
-      setIsMobile(window.innerWidth < 768);
-      // Reset mini position on resize so player stays in viewport
-      setMiniPos(null);
-    };
+    const onResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener("resize", onResize);
     window.addEventListener("orientationchange", onResize);
     return () => {
@@ -136,56 +132,58 @@ function PlayerHost() {
   const inline = onWatchPage && !minimized && !!slotEl;
   const hideForMount = onWatchPage && !minimized && !slotEl;
 
-  // Continuously align host element to slot rect (RAF loop).
+  // Continuously align host element to slot rect (RAF loop) — but ONLY
+  // write to the DOM when geometry actually changed. This is what
+  // stabilises the player while the user scrolls vertically through
+  // the Up-next list.
   useEffect(() => {
     if (!video) return;
     let raf = 0;
-    const tick = () => {
+    const apply = (left, top, width, height, radius, shadow, opacity) => {
       const host = hostRef.current;
-      if (host) {
-        if (inline && slotEl) {
-          const r = slotEl.getBoundingClientRect();
-          host.style.left = `${r.left}px`;
-          host.style.top = `${r.top + dragOffset}px`;
-          host.style.width = `${r.width}px`;
-          host.style.height = `${r.height}px`;
-          host.style.borderRadius = "0px";
-          host.style.boxShadow = "none";
-          host.style.opacity = dragOffset > 0
-            ? `${Math.max(0.4, 1 - dragOffset / 400)}` : "1";
-        } else if (isMobile) {
-          // Mobile mini bar
-          const barH = 64;
-          const bottomNavH = 56;
-          const baseLeft = 0;
-          const baseTop = window.innerHeight - barH - bottomNavH;
-          const left = miniPos?.x ?? baseLeft;
-          const top  = miniPos?.y ?? baseTop;
-          host.style.left = `${left}px`;
-          host.style.top = `${top}px`;
-          host.style.width = `${window.innerWidth}px`;
-          host.style.height = `${barH}px`;
-          host.style.borderRadius = "0px";
-          host.style.boxShadow = "0 -6px 20px rgba(0,0,0,.6)";
-          host.style.opacity = "1";
-        } else {
-          const w = 320;
-          const videoH = Math.round(w * 9 / 16);
-          const captionH = 40;
-          host.style.left = `${window.innerWidth - w - 16}px`;
-          host.style.top = `${window.innerHeight - videoH - captionH - 16}px`;
-          host.style.width = `${w}px`;
-          host.style.height = `${videoH + captionH}px`;
-          host.style.borderRadius = "12px";
-          host.style.boxShadow = "0 12px 40px rgba(0,0,0,.6)";
-          host.style.opacity = "1";
-        }
+      if (!host) return;
+      const last = lastGeomRef.current;
+      if (Math.abs(left - last.left) > 0.5) { host.style.left = `${left}px`; last.left = left; }
+      if (Math.abs(top - last.top) > 0.5) { host.style.top = `${top}px`; last.top = top; }
+      if (Math.abs(width - last.width) > 0.5) { host.style.width = `${width}px`; last.width = width; }
+      if (Math.abs(height - last.height) > 0.5) { host.style.height = `${height}px`; last.height = height; }
+      if (radius !== last.radius) { host.style.borderRadius = radius; last.radius = radius; }
+      if (shadow !== last.shadow) { host.style.boxShadow = shadow; last.shadow = shadow; }
+      if (opacity !== last.opacity) { host.style.opacity = opacity; last.opacity = opacity; }
+    };
+    const tick = () => {
+      if (inline && slotEl) {
+        const r = slotEl.getBoundingClientRect();
+        apply(
+          r.left, r.top + dragOffset, r.width, r.height,
+          "0px", "none",
+          dragOffset > 0 ? `${Math.max(0.4, 1 - dragOffset / 400)}` : "1"
+        );
+      } else if (isMobile) {
+        // Real-YouTube-style mini bar pinned above bottom nav.
+        const barH = 64;
+        const bottomNavH = 56;
+        apply(
+          0, window.innerHeight - barH - bottomNavH,
+          window.innerWidth, barH,
+          "0px", "0 -6px 20px rgba(0,0,0,.6)", "1"
+        );
+      } else {
+        const w = 320;
+        const videoH = Math.round(w * 9 / 16);
+        const captionH = 40;
+        apply(
+          window.innerWidth - w - 16,
+          window.innerHeight - videoH - captionH - 16,
+          w, videoH + captionH,
+          "12px", "0 12px 40px rgba(0,0,0,.6)", "1"
+        );
       }
       raf = requestAnimationFrame(tick);
     };
     tick();
     return () => cancelAnimationFrame(raf);
-  }, [video, inline, slotEl, dragOffset, isMobile, miniPos]);
+  }, [video, inline, slotEl, dragOffset, isMobile]);
 
   // Build embed URL — branding hidden + autoplay forced.
   const embedSrc = useMemo(() => {
@@ -223,7 +221,6 @@ function PlayerHost() {
       let d; try { d = JSON.parse(e.data); } catch { return; }
       if (d.event === "onReady" || d.event === "initialDelivery") {
         send("playVideo");
-        // iOS Safari needs a fresh user gesture to unmute; we still try.
         setTimeout(() => { send("unMute"); send("setVolume", [100]); send("playVideo"); }, 250);
       }
       if (d.event === "infoDelivery" && d.info) {
@@ -249,7 +246,9 @@ function PlayerHost() {
     } catch {}
   }, []);
 
-  // Drag-down to minimize when inline (Watch page)
+  // Drag-down to minimize when inline (Watch page). NOTE: horizontal
+  // swipe-to-dismiss on the mini player has been removed — it was
+  // making the mini player feel non-YouTube-like.
   useEffect(() => {
     if (!inline) { setDragOffset(0); return; }
     const host = hostRef.current;
@@ -258,7 +257,7 @@ function PlayerHost() {
       const t = e.target;
       if (!(t && t.getAttribute && t.getAttribute("data-drag-handle"))) return;
       const y = e.touches ? e.touches[0].clientY : e.clientY;
-      dragRef.current = { startY: y, startX: 0, dragging: true, dy: 0, dx: 0, mode: "down" };
+      dragRef.current = { startY: y, dragging: true, dy: 0 };
     };
     const onMove = (e) => {
       if (!dragRef.current.dragging) return;
@@ -290,60 +289,6 @@ function PlayerHost() {
     };
   }, [inline, setMinimized]);
 
-  // Mini-player drag (mobile only): swipe horizontally to dismiss,
-  // drag vertically to reposition. Uses the .ryh-mini-drag-handle area.
-  useEffect(() => {
-    if (inline || !isMobile || !video) return;
-    const host = hostRef.current;
-    if (!host) return;
-    const onStart = (e) => {
-      const t = e.target;
-      if (!(t && t.closest && t.closest("[data-mini-drag]"))) return;
-      const x = e.touches ? e.touches[0].clientX : e.clientX;
-      const y = e.touches ? e.touches[0].clientY : e.clientY;
-      miniDragRef.current = { x, y, originX: host.offsetLeft, originY: host.offsetTop };
-    };
-    const onMove = (e) => {
-      const s = miniDragRef.current;
-      if (!s || s.x == null) return;
-      const x = e.touches ? e.touches[0].clientX : e.clientX;
-      const y = e.touches ? e.touches[0].clientY : e.clientY;
-      const dx = x - s.x;
-      const dy = y - s.y;
-      const nextX = Math.max(-window.innerWidth, Math.min(window.innerWidth, s.originX + dx));
-      const nextY = Math.max(0, Math.min(window.innerHeight - 64, s.originY + dy));
-      setMiniPos({ x: nextX, y: nextY });
-    };
-    const onEnd = (e) => {
-      const s = miniDragRef.current;
-      if (!s || s.x == null) return;
-      const x = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
-      const dx = x - s.x;
-      miniDragRef.current = { x: null, y: null };
-      // Swipe horizontally > 35% screen width → dismiss
-      if (Math.abs(dx) > window.innerWidth * 0.35) {
-        close();
-      } else {
-        // Snap to edge if user dragged
-        setMiniPos((p) => p ? { x: 0, y: p.y } : null);
-      }
-    };
-    host.addEventListener("mousedown", onStart);
-    host.addEventListener("touchstart", onStart, { passive: true });
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("touchmove", onMove, { passive: true });
-    window.addEventListener("mouseup", onEnd);
-    window.addEventListener("touchend", onEnd);
-    return () => {
-      host.removeEventListener("mousedown", onStart);
-      host.removeEventListener("touchstart", onStart);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("touchmove", onMove);
-      window.removeEventListener("mouseup", onEnd);
-      window.removeEventListener("touchend", onEnd);
-    };
-  }, [inline, isMobile, video, close]);
-
   if (!video) return null;
 
   const iframeStyle = inline
@@ -352,16 +297,23 @@ function PlayerHost() {
     ? { position: "absolute", left: 0, top: 0, width: 110, height: "100%", border: 0, display: "block" }
     : { position: "absolute", left: 0, top: 0, width: "100%", height: "calc(100% - 40px)", border: 0, display: "block" };
 
+  // Sandbox: no allow-popups, no allow-top-navigation → clicks on
+  // YouTube's "Watch on YouTube" pill or the watermark cannot navigate
+  // away from our app and cannot open a new tab. The postMessage
+  // bridge still works because allow-scripts + allow-same-origin are
+  // granted.
+  const SANDBOX = "allow-scripts allow-same-origin allow-presentation";
+
   return (
     <div
       ref={hostRef}
-      className={`ryh-player-host ${!inline && isMobile ? "ryh-mini-mobile" : ""}`}
+      className={`ryh-player-host ${!inline ? "ryh-mini-enter" : ""} ${!inline && isMobile ? "ryh-mini-mobile" : ""}`}
       style={{
         position: "fixed",
         zIndex: 60,
         background: !inline && isMobile ? "#212121" : "#000",
         overflow: "hidden",
-        transition: "border-radius .2s, box-shadow .2s, opacity .15s",
+        transition: "border-radius .25s ease, box-shadow .25s ease, opacity .15s ease",
         visibility: hideForMount ? "hidden" : "visible",
       }}
       data-testid="player-host"
@@ -375,29 +327,26 @@ function PlayerHost() {
         referrerPolicy="no-referrer-when-downgrade"
         loading="eager"
         frameBorder="0"
+        sandbox={SANDBOX}
         style={iframeStyle}
       />
 
-      {/* INLINE branding-cover overlays + drag handle */}
+      {/* INLINE: drag handle only — no visible black covers anymore. */}
       {inline && (
-        <>
-          <div className="ryh-yt-cover ryh-yt-cover-tl" />
-          <div className="ryh-yt-cover ryh-yt-cover-br" />
-          <div
-            data-drag-handle="1"
-            className="absolute top-0 left-0 right-0 h-12"
-            style={{ cursor: "grab", zIndex: 5 }}
-          />
-        </>
+        <div
+          data-drag-handle="1"
+          className="absolute top-0 left-0 right-0 h-12"
+          style={{ cursor: "grab", zIndex: 5 }}
+        />
       )}
 
-      {/* MINI MOBILE: bar with title + play/close */}
+      {/* MINI MOBILE: bar with title + play/close. Tapping the title
+          expands; horizontal swipe is intentionally disabled. */}
       {!inline && isMobile && (
         <div
           className="absolute top-0 right-0 bottom-0 flex items-center"
           style={{ left: 110 }}
           data-testid="mini-player-bar"
-          data-mini-drag="1"
         >
           <button
             onClick={expand}
@@ -414,7 +363,7 @@ function PlayerHost() {
           </button>
           <button
             onClick={() => { playing ? sendCmd("pauseVideo") : sendCmd("playVideo"); }}
-            className="px-3 h-full grid place-items-center text-white hover:bg-white/10 shrink-0"
+            className="px-3 h-full grid place-items-center text-white hover:bg-white/10 active:scale-90 transition-transform shrink-0"
             data-testid="mini-player-play-btn"
             aria-label="Play/Pause"
           >
@@ -422,7 +371,7 @@ function PlayerHost() {
           </button>
           <button
             onClick={close}
-            className="px-3 h-full grid place-items-center text-white hover:bg-white/10 shrink-0"
+            className="px-3 h-full grid place-items-center text-white hover:bg-white/10 active:scale-90 transition-transform shrink-0"
             data-testid="mini-player-close-btn"
             aria-label="Close"
           >
@@ -440,7 +389,7 @@ function PlayerHost() {
         >
           <button
             onClick={() => { playing ? sendCmd("pauseVideo") : sendCmd("playVideo"); }}
-            className="p-1.5 rounded-full hover:bg-white/10 text-white shrink-0"
+            className="p-1.5 rounded-full hover:bg-white/10 text-white shrink-0 active:scale-90 transition-transform"
             data-testid="mini-player-play-btn"
             aria-label="Play/Pause"
           >
@@ -456,7 +405,7 @@ function PlayerHost() {
           </button>
           <button
             onClick={expand}
-            className="p-1.5 rounded-full hover:bg-white/10 text-white shrink-0"
+            className="p-1.5 rounded-full hover:bg-white/10 text-white shrink-0 active:scale-90 transition-transform"
             data-testid="mini-player-expand-btn"
             aria-label="Expand"
           >
@@ -464,23 +413,13 @@ function PlayerHost() {
           </button>
           <button
             onClick={close}
-            className="p-1.5 rounded-full hover:bg-white/10 text-white shrink-0"
+            className="p-1.5 rounded-full hover:bg-white/10 text-white shrink-0 active:scale-90 transition-transform"
             data-testid="mini-player-close-btn"
             aria-label="Close"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
-      )}
-
-      {/* Branding-cover overlays for the mini player video area too */}
-      {!inline && (
-        <>
-          <div className="ryh-yt-cover ryh-yt-cover-tl"
-               style={{ width: isMobile ? 110 : "100%", height: 24 }} />
-          <div className="ryh-yt-cover ryh-yt-cover-br"
-               style={{ width: 70, height: 24 }} />
-        </>
       )}
     </div>
   );
