@@ -17,8 +17,25 @@ export default function Home() {
   const [keywords, setKeywords] = useState([]);
   const [ytRecent, setYtRecent] = useState([]);
   const [ytLiked, setYtLiked] = useState([]);
+  // Bumped on every pull-to-refresh so the connected-YouTube discover
+  // feed re-fetches AND re-shuffles. Keeps the home page feeling fresh
+  // for every reload, exactly like real YouTube's "Home" tab.
+  const [refreshTick, setRefreshTick] = useState(0);
   const yt = useYouTube();
   const nav = useNavigate();
+
+  // Deterministic-but-rotating shuffle: seeded by refreshTick + minute
+  // so two refreshes in the same minute still differ.
+  const shuffle = useCallback((arr) => {
+    const a = [...arr];
+    let seed = refreshTick * 9301 + Date.now() % 233280;
+    for (let i = a.length - 1; i > 0; i--) {
+      seed = (seed * 9301 + 49297) % 233280;
+      const j = Math.floor((seed / 233280) * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }, [refreshTick]);
 
   const loadFeed = useCallback(async () => {
     try {
@@ -44,18 +61,24 @@ export default function Home() {
     (async () => {
       try {
         const [recent, liked] = await Promise.all([
-          api.get("/youtube/me/recent", { params: { max_results: 24 } }).then(r => r.data?.videos || []).catch(() => []),
-          api.get("/youtube/me/liked", { params: { max_results: 12 } }).then(r => r.data?.videos || []).catch(() => []),
+          // cache-buster forces a fresh response on each refresh —
+          // critical so the per-user discover changes on reload.
+          api.get("/youtube/me/recent", { params: { max_results: 36, _: Date.now() } })
+            .then(r => r.data?.videos || []).catch(() => []),
+          api.get("/youtube/me/liked", { params: { max_results: 12, _: Date.now() } })
+            .then(r => r.data?.videos || []).catch(() => []),
         ]);
         if (!alive) return;
-        setYtRecent(recent); setYtLiked(liked);
+        setYtRecent(shuffle(recent));
+        setYtLiked(liked);
       } catch {}
     })();
     return () => { alive = false; };
-  }, [yt.connected]);
+  }, [yt.connected, refreshTick, shuffle]);
 
   const onRefresh = useCallback(async () => {
     setLoading(true);
+    setRefreshTick((t) => t + 1);
     await loadFeed();
   }, [loadFeed]);
 
@@ -123,7 +146,7 @@ export default function Home() {
 
         {yt.connected && ytRecent.length > 0 && (
           <Section
-            title={`From your subscriptions${yt.google?.name ? ` — ${yt.google.name}` : ""}`}
+            title={`Discover${yt.google?.name ? ` — ${yt.google.name}` : ""}`}
             icon={Youtube} items={ytRecent} testid="yt-section-recent"
           />
         )}
