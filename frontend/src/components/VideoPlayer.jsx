@@ -35,6 +35,13 @@ export default function VideoPlayer({
   const [buffered, setBuffered] = useState(0);
   const [fs, setFs] = useState(false);
   const [showCtrl, setShowCtrl] = useState(true);
+  // If the direct <video> source fails (googlevideo IP/token mismatch, CORS,
+  // expired URL, etc.) automatically swap to the YouTube embed iframe so the
+  // video still plays without a "frozen poster" experience.
+  const [embedFallback, setEmbedFallback] = useState(false);
+  // Watchdog: if metadata never loads within ~6s after src is set, assume the
+  // direct stream is silently broken and trigger embed fallback.
+  const stallTimerRef = useRef(null);
   const hideTimer = useRef(null);
 
   // Reset + attach source (HLS or progressive) when src changes
@@ -42,11 +49,18 @@ export default function VideoPlayer({
     const v = ref.current;
     if (!v) return;
     setTime(0); setDur(0); setBuffered(0); setPlaying(false);
+    // Reset embed fallback whenever a new src is attempted, so the user
+    // can retry direct playback on the next video.
+    setEmbedFallback(false);
 
     // Cleanup any previous hls instance
     if (hlsRef.current) {
       try { hlsRef.current.destroy(); } catch {}
       hlsRef.current = null;
+    }
+    if (stallTimerRef.current) {
+      clearTimeout(stallTimerRef.current);
+      stallTimerRef.current = null;
     }
 
     if (!src) return;
@@ -60,12 +74,26 @@ export default function VideoPlayer({
       if (autoPlay) v.play().catch(() => {});
     };
 
+    // If neither metadata nor a single buffered byte arrives in 6 seconds,
+    // the direct googlevideo URL is almost certainly being silently blocked
+    // (poster shows but video never starts). Switch to the iframe embed.
+    const armStallWatchdog = () => {
+      if (!embedUrl) return;
+      stallTimerRef.current = setTimeout(() => {
+        const stalled =
+          v.readyState < 2 /* HAVE_CURRENT_DATA */ &&
+          (!v.buffered || v.buffered.length === 0);
+        if (stalled) setEmbedFallback(true);
+      }, 6000);
+    };
+
     if (looksHls) {
       // Native HLS support (Safari / iOS)
       if (v.canPlayType("application/vnd.apple.mpegurl")) {
         v.src = src;
         v.load();
         tryAutoplay();
+        armStallWatchdog();
       } else if (Hls.isSupported()) {
         const hls = new Hls({
           enableWorker: true,
@@ -88,26 +116,34 @@ export default function VideoPlayer({
                 break;
               default:
                 try { hls.destroy(); } catch {}
+                if (embedUrl) setEmbedFallback(true);
             }
           }
         });
+        armStallWatchdog();
       } else {
         // Browser can't play HLS at all — fallback attempt
         v.src = src;
         v.load();
         tryAutoplay();
+        armStallWatchdog();
       }
     } else {
       // Plain progressive (mp4)
       v.src = src;
       v.load();
       tryAutoplay();
+      armStallWatchdog();
     }
 
     return () => {
       if (hlsRef.current) {
         try { hlsRef.current.destroy(); } catch {}
         hlsRef.current = null;
+      }
+      if (stallTimerRef.current) {
+        clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,23 +172,42 @@ export default function VideoPlayer({
         }
       } catch {}
     };
-    const onMeta = () => setDur(v.duration || 0);
+    const onMeta = () => {
+      setDur(v.duration || 0);
+      // Metadata arrived → direct stream is healthy, cancel watchdog.
+      if (stallTimerRef.current) {
+        clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
+    };
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
     const onEnd = () => onEnded && onEnded();
+    const onErr = () => { if (embedUrl) setEmbedFallback(true); };
+    const onStalled = () => {
+      // If the network has been stalled for 5s with no data, fall back.
+      if (!embedUrl) return;
+      if (v.readyState < 2 && (!v.buffered || v.buffered.length === 0)) {
+        setEmbedFallback(true);
+      }
+    };
     v.addEventListener("timeupdate", onTime);
     v.addEventListener("loadedmetadata", onMeta);
     v.addEventListener("play", onPlay);
     v.addEventListener("pause", onPause);
     v.addEventListener("ended", onEnd);
+    v.addEventListener("error", onErr);
+    v.addEventListener("stalled", onStalled);
     return () => {
       v.removeEventListener("timeupdate", onTime);
       v.removeEventListener("loadedmetadata", onMeta);
       v.removeEventListener("play", onPlay);
       v.removeEventListener("pause", onPause);
       v.removeEventListener("ended", onEnd);
+      v.removeEventListener("error", onErr);
+      v.removeEventListener("stalled", onStalled);
     };
-  }, [onProgress, onEnded, skipSegments]);
+  }, [onProgress, onEnded, skipSegments, embedUrl]);
 
   const toggle = useCallback(() => {
     const v = ref.current; if (!v) return;
@@ -235,7 +290,9 @@ export default function VideoPlayer({
   // Service Worker / in-page ad-block layer (see public/sw.js & lib/adBlock.js).
   // Sponsor segments are auto-skipped via the IFrame Player postMessage API.
   useEffect(() => {
+    // Only set up the postMessage bridge when the iframe is actually rendered.
     if (!embedUrl) return;
+    if (src && !embedFallback) return;
     const iframe = iframeRef.current;
     if (!iframe) return;
 
@@ -300,9 +357,9 @@ export default function VideoPlayer({
       if (pollId) clearInterval(pollId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedUrl, skipSegments]);
+  }, [embedUrl, skipSegments, src, embedFallback]);
 
-  if (embedUrl) {
+  if (embedUrl && (!src || embedFallback)) {
     // Build an embed URL that is guaranteed to expose the postMessage API.
     const sep = embedUrl.includes("?") ? "&" : "?";
     const finalEmbed = `${embedUrl}${sep}enablejsapi=1&origin=${encodeURIComponent(
