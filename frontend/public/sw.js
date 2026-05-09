@@ -31,6 +31,9 @@ const AD_HOSTS = [
   'youtube.com/api/stats/watchtime',
   'youtubei/v1/log_event',
   'ad.doubleclick.net',
+  'securepubads.g.doubleclick.net',
+  's0.2mdn.net',
+  'adservice.google.com',
 ];
 
 const AD_PATH_FRAGMENTS = [
@@ -47,6 +50,10 @@ const AD_PATH_FRAGMENTS = [
   '/api/stats/watchtime',
   '/log_event',
   '/youtubei/v1/player/ad_break',
+  '/youtubei/v1/log_event',
+  '/api/stats/playback',
+  '/api/stats/delayplay',
+  '/csi_204',
 ];
 
 function isAdRequest(url) {
