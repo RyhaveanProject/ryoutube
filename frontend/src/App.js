@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import "./App.css";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { PlayerProvider } from "./lib/player";
 import { installCopyGuard } from "./lib/copyGuard";
 import { installAdBlock } from "./lib/adBlock";
 import Layout from "./components/Layout";
@@ -49,6 +50,7 @@ function App() {
     <div className="App">
       <AuthProvider>
         <BrowserRouter>
+          <PlayerProvider>
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/blocked" element={<DeviceBlocked />} />
@@ -76,6 +78,7 @@ function App() {
             <Route path="/admin" element={<ProtectedShell><GuardedAdmin /></ProtectedShell>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </PlayerProvider>
         </BrowserRouter>
       </AuthProvider>
     </div>
