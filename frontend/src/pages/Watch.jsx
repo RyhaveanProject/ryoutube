@@ -34,7 +34,8 @@ export default function Watch() {
       if (vMeta.data && vMeta.data.channel) merged.channel = vMeta.data.channel;
       if (vMeta.data && vMeta.data.description) merged.description = vMeta.data.description;
       setMeta(merged);
-      setRecs(r.data?.results || []);
+      const recList = r.data?.results || [];
+      setRecs(recList);
       setLiked((l.data?.ids || []).includes(id));
       const wl = await api.get(`/watch-later`).catch(() => ({ data: { items: [] } }));
       setSaved((wl.data?.items || []).some((x) => x.video_id === id));
@@ -46,6 +47,10 @@ export default function Watch() {
         thumbnail: merged.thumbnail || "",
         embed_url: merged.embed_url || s.data?.embed_url || "",
       });
+      // Push the recommendations as the global Up-next queue so the
+      // player can auto-advance when the current video ends and so
+      // the prev/next buttons inside the player work.
+      if (player.setUpNext) player.setUpNext(recList.filter((v) => v && v.id && v.id !== id));
     } catch (e) {
       toast.error("Failed to load video");
     } finally {
