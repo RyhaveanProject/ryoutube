@@ -1,95 +1,88 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import React, { useEffect, useState, useCallback } from "react";
+import { useParams } from "react-router-dom";
 import { ThumbsUp, ThumbsDown, Clock, Share2, Loader2 } from "lucide-react";
 import { api } from "../lib/api";
-import VideoPlayer from "../components/VideoPlayer";
 import VideoCard from "../components/VideoCard";
 import { Button } from "../components/ui/button";
 import { formatViews } from "../lib/format";
 import { toast, Toaster } from "sonner";
+import { usePlayer, PlayerSlot } from "../lib/player";
 
 export default function Watch() {
   const { id } = useParams();
-  const nav = useNavigate();
+  const player = usePlayer();
   const [meta, setMeta] = useState(null);
-  const [stream, setStream] = useState(null);
   const [recs, setRecs] = useState([]);
-  const [skipSegments, setSkipSegments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [liked, setLiked] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [startAt, setStartAt] = useState(0);
-  const lastReport = useRef(0);
 
   const load = useCallback(async () => {
-    setLoading(true); setStream(null); setMeta(null);
+    setLoading(true); setMeta(null);
     try {
-      const [s, r, l] = await Promise.all([
+      const [s, r, l, vMeta] = await Promise.all([
         api.get(`/stream/${id}`),
         api.get(`/recommendations`, { params: { video_id: id } }),
         api.get(`/likes`),
+        // Rich metadata (channel description, etc.) — slow but worth it.
+        api.get(`/video/${id}`).catch(() => ({ data: {} })),
       ]);
-      setMeta(s.data);
-      setStream(s.data);
+      const merged = { ...(s.data || {}), ...(vMeta.data || {}) };
+      // Prefer oEmbed/yt-dlp values from /video over the stub from /stream.
+      if (vMeta.data && vMeta.data.title) merged.title = vMeta.data.title;
+      if (vMeta.data && vMeta.data.channel) merged.channel = vMeta.data.channel;
+      if (vMeta.data && vMeta.data.description) merged.description = vMeta.data.description;
+      setMeta(merged);
       setRecs(r.data.results || []);
       setLiked((l.data.ids || []).includes(id));
-      // Fetch sponsor / in-video ad segments to auto-skip
-      api.get(`/skip-segments/${id}`)
-        .then((res) => setSkipSegments(res.data?.segments || []))
-        .catch(() => setSkipSegments([]));
-      // Get history progress
-      const h = await api.get(`/history`).catch(() => ({ data: { history: [] } }));
-      const item = (h.data.history || []).find((x) => x.video_id === id);
-      if (item && item.progress > 5 && (item.duration ? item.progress < item.duration - 10 : true)) {
-        setStartAt(item.progress);
-      } else {
-        setStartAt(0);
-      }
-      // Check watch later
       const wl = await api.get(`/watch-later`).catch(() => ({ data: { items: [] } }));
       setSaved((wl.data.items || []).some((x) => x.video_id === id));
+
+      // Hand off the video to the global player (continues across nav)
+      player.open({
+        id,
+        title: merged.title || "",
+        channel: merged.channel || "",
+        thumbnail: merged.thumbnail || "",
+        embed_url: merged.embed_url || s.data?.embed_url || "",
+      });
     } catch (e) {
       toast.error("Failed to load video");
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Save progress to history (debounced every ~10s)
-  const onProgress = useCallback((current, duration) => {
-    const now = Date.now();
-    if (now - lastReport.current < 10000) return;
-    lastReport.current = now;
+  // History tracking — coarse interval, since we no longer get
+  // per-frame events from the iframe directly here.
+  useEffect(() => {
     if (!meta) return;
-    api.post("/history", {
-      video: {
-        id, title: meta.title, channel: meta.channel,
-        duration: meta.duration || duration || 0,
-        thumbnail: meta.thumbnail, view_count: meta.view_count || 0,
-      },
-      progress: current,
-    }).catch(() => {});
+    const t = setInterval(() => {
+      api.post("/history", {
+        video: {
+          id, title: meta.title || "", channel: meta.channel || "",
+          duration: meta.duration || 0, thumbnail: meta.thumbnail || "",
+          view_count: meta.view_count || 0,
+        },
+        progress: 0,
+      }).catch(() => {});
+    }, 30000);
+    return () => clearInterval(t);
   }, [id, meta]);
-
-  const onEnded = () => {
-    if (recs.length > 0) nav(`/watch/${recs[0].id}`);
-  };
 
   const toggleLike = async () => {
     if (!meta) return;
     try {
-      if (liked) {
-        await api.delete(`/likes/${id}`);
-        setLiked(false);
-      } else {
+      if (liked) { await api.delete(`/likes/${id}`); setLiked(false); }
+      else {
         await api.post(`/likes`, {
           id, title: meta.title, channel: meta.channel,
           duration: meta.duration, thumbnail: meta.thumbnail, view_count: meta.view_count,
         });
-        setLiked(true);
-        toast.success("Added to liked");
+        setLiked(true); toast.success("Added to liked");
       }
     } catch { toast.error("Failed"); }
   };
@@ -97,16 +90,13 @@ export default function Watch() {
   const toggleSave = async () => {
     if (!meta) return;
     try {
-      if (saved) {
-        await api.delete(`/watch-later/${id}`);
-        setSaved(false);
-      } else {
+      if (saved) { await api.delete(`/watch-later/${id}`); setSaved(false); }
+      else {
         await api.post(`/watch-later`, {
           id, title: meta.title, channel: meta.channel,
           duration: meta.duration, thumbnail: meta.thumbnail, view_count: meta.view_count,
         });
-        setSaved(true);
-        toast.success("Saved to Watch Later");
+        setSaved(true); toast.success("Saved to Watch Later");
       }
     } catch { toast.error("Failed"); }
   };
@@ -127,27 +117,20 @@ export default function Watch() {
       <Toaster theme="dark" richColors position="top-center" />
       <div className="flex-1 min-w-0 max-w-4xl">
         <div className="ryh-watch-player-wrap">
-        {loading || !stream ? (
-          <div className="aspect-video bg-black grid place-items-center">
-            <Loader2 className="w-8 h-8 animate-spin text-neutral-400" />
-          </div>
-        ) : (
-          <VideoPlayer
-            src={stream.is_embed ? "" : stream.stream_url}
-            poster={stream.thumbnail}
-            startAt={startAt}
-            onProgress={onProgress}
-            onEnded={onEnded}
-            isHls={!!stream.is_hls}
-            isLive={!!stream.is_live}
-            skipSegments={skipSegments}
-            embedUrl={stream.embed_url || ""}
-          />
-        )}
+          {loading || !meta ? (
+            <div className="aspect-video bg-black grid place-items-center">
+              <Loader2 className="w-8 h-8 animate-spin text-neutral-400" />
+            </div>
+          ) : (
+            <PlayerSlot />
+          )}
         </div>
 
         <div className="px-3 lg:px-0 py-4">
-          <h1 className="text-lg sm:text-xl font-semibold text-white leading-snug" data-testid="watch-title">
+          <h1
+            className="text-lg sm:text-xl font-semibold text-white leading-snug"
+            data-testid="watch-title"
+          >
             {meta?.title || "Loading…"}
           </h1>
 
@@ -157,7 +140,9 @@ export default function Watch() {
                 {(meta?.channel || "?").charAt(0).toUpperCase()}
               </div>
               <div className="min-w-0">
-                <div className="text-white font-medium truncate" data-testid="watch-channel">{meta?.channel}</div>
+                <div className="text-white font-medium truncate" data-testid="watch-channel">
+                  {meta?.channel || "Unknown channel"}
+                </div>
                 {meta?.view_count > 0 && (
                   <div className="text-xs text-neutral-400">{formatViews(meta.view_count)} views</div>
                 )}
@@ -186,25 +171,41 @@ export default function Watch() {
               >
                 <Clock className="w-4 h-4 mr-2" /> {saved ? "Saved" : "Save"}
               </Button>
-              <Button onClick={share} variant="ghost" className="bg-neutral-800 hover:bg-neutral-700 rounded-full text-white" data-testid="watch-share-btn">
+              <Button
+                onClick={share}
+                variant="ghost"
+                className="bg-neutral-800 hover:bg-neutral-700 rounded-full text-white"
+                data-testid="watch-share-btn"
+              >
                 <Share2 className="w-4 h-4 mr-2" /> Share
               </Button>
             </div>
           </div>
 
-          {meta?.description && (
-            <details className="mt-4 bg-neutral-900 rounded-xl p-3 text-sm text-neutral-200">
-              <summary className="cursor-pointer text-neutral-400 select-none">Description</summary>
-              <pre className="whitespace-pre-wrap font-sans mt-2 text-[13px] leading-relaxed">{meta.description}</pre>
-            </details>
-          )}
+          {/* Description block — ALWAYS visible, never collapsed */}
+          <div
+            className="mt-4 bg-neutral-900 rounded-xl p-4 text-sm text-neutral-100"
+            data-testid="watch-description"
+          >
+            <div className="text-[13px] text-neutral-400 mb-2">
+              {meta?.channel ? `From ${meta.channel}` : "Description"}
+              {meta?.view_count > 0 && (
+                <span className="ml-2">{formatViews(meta.view_count)} views</span>
+              )}
+            </div>
+            <pre className="whitespace-pre-wrap font-sans text-[13.5px] leading-relaxed text-neutral-100">
+              {meta?.description?.trim() || "No description provided for this video."}
+            </pre>
+          </div>
         </div>
       </div>
 
       <aside className="lg:w-[400px] shrink-0 px-3 lg:px-0">
         <h3 className="text-sm font-semibold text-neutral-300 mb-3">Up next</h3>
         <div className="space-y-3">
-          {recs.map((v) => <VideoCard key={v.id} video={v} layout="row" />)}
+          {recs.map((v) => (
+            <VideoCard key={v.id} video={v} layout="row" />
+          ))}
         </div>
       </aside>
     </div>
