@@ -12,6 +12,7 @@ import Watch from "./pages/Watch";
 import Library from "./pages/Library";
 import Admin from "./pages/Admin";
 import { HistoryPage, LikedPage, WatchLaterPage } from "./pages/Lists";
+import YouTubeCallback from "./pages/YouTubeCallback";
 import { Loader2 } from "lucide-react";
 
 function ProtectedShell({ children }) {
@@ -21,6 +22,16 @@ function ProtectedShell({ children }) {
   if (deviceBlocked) return <Navigate to="/blocked" replace />;
   if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
   return <Layout>{children}</Layout>;
+}
+
+function ProtectedBare({ children }) {
+  // For routes that need auth but no chrome (e.g. OAuth callback)
+  const { user, ready, deviceBlocked } = useAuth();
+  const loc = useLocation();
+  if (!ready) return <FullPageLoader />;
+  if (deviceBlocked) return <Navigate to="/blocked" replace />;
+  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
+  return children;
 }
 
 function FullPageLoader() {
@@ -49,6 +60,7 @@ function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/blocked" element={<DeviceBlocked />} />
+            <Route path="/youtube/callback" element={<ProtectedBare><YouTubeCallback /></ProtectedBare>} />
             <Route path="/" element={<ProtectedShell><Home /></ProtectedShell>} />
             <Route path="/search" element={<ProtectedShell><Search /></ProtectedShell>} />
             <Route path="/watch/:id" element={<ProtectedShell><Watch /></ProtectedShell>} />
